@@ -7,7 +7,8 @@ import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt } from "./p
 export const TICK_MODEL = "claude-haiku-4-5";
 export const RESTRUCTURE_MODEL = "claude-sonnet-5";
 
-const client = new Anthropic();
+// ROOMY_ prefix so the key never collides with the Claude CLI auth precedence inside evaluator containers.
+const client = new Anthropic({ apiKey: process.env.ROOMY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY });
 
 /**
  * ponytail: the ops array is requested in prose and parsed leniently, not via

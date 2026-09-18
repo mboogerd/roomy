@@ -1,7 +1,8 @@
 # Roomy backlog
 
 Written to be executed by agents with little supervision. Read CLAUDE.md first.
-The live pipeline is specified in `docs/pipeline.md`; T3 implements it.
+The live pipeline is specified in `docs/pipeline.md`. Executable tickets are in `docs/tickets/`;
+the orchestration runbook is `docs/orchestration/PLAN.md`. This file is the human-readable overview.
 
 ## Where this is going
 
