@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Roomy</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1d1d1f; --mut:#6b6b70; --line:#e3e3e0; --accent:#3b6fe0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#151517; --fg:#e9e9ea; --mut:#9a9aa0; --line:#2c2c30; --accent:#7ba1f5; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; height:100vh; display:grid; grid-template-columns:1fr 340px;
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--fg); }
+  #canvas { overflow:auto; padding:24px; display:flex; flex-direction:column; gap:20px; }
+  .block { border:1px solid var(--line); border-radius:10px;
+           background:color-mix(in srgb,var(--bg) 85%,var(--fg) 4%); }
+  .block.changed { animation: flash 1.6s ease-out; }
+  @keyframes flash {
+    from { border-color:var(--accent);
+           box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent); }
+  }
+  .block h2 { margin:0; padding:10px 14px; font-size:12px; font-weight:600; letter-spacing:.04em;
+              text-transform:uppercase; color:var(--mut); border-bottom:1px solid var(--line); }
+  .body { padding:16px; overflow-x:auto; }
+  .body svg { max-width:100%; height:auto; }
+  aside { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  #log { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+  .u { font-size:13px; } .u b { color:var(--accent); font-weight:600; }
+  .bar { border-top:1px solid var(--line); padding:10px; display:flex; gap:6px; flex-wrap:wrap; }
+  input, button, select { font:inherit; padding:6px 10px; border:1px solid var(--line);
+                          border-radius:6px; background:var(--bg); color:var(--fg); }
+  input { flex:1; min-width:120px; } button { cursor:pointer; }
+  button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  #status { padding:6px 12px; font-size:12px; color:var(--mut); border-top:1px solid var(--line); }
+  .empty { color:var(--mut); margin:auto; text-align:center; }
+</style>
+
+<main id="canvas"><p class="empty">Roomy is listening. Start talking, or replay a fixture.</p></main>
+<aside>
+  <div id="log"></div>
+  <div class="bar">
+    <input id="speaker" value="Me" style="flex:0 0 70px">
+    <input id="text" placeholder="Type what was said...">
+    <button id="mic" title="Web Speech API, Chrome only">mic</button>
+  </div>
+  <div class="bar">
+    <select id="fixture">
+      <option>architecture-debate</option>
+      <option>product-brainstorm</option>
+      <option>incident-review</option>
+    </select>
+    <select id="speed"><option>5</option><option selected>10</option><option>30</option></select>
+    <button id="play">Replay</button>
+    <button id="reset">Reset</button>
+  </div>
+  <div id="status">idle</div>
+</aside>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "loose" });
+
+const $ = (id) => document.getElementById(id);
+const post = (path, body) => fetch(path, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify(body ?? {}),
+});
+
+// Cache by id+source so an unchanged block is never re-rendered.
+const rendered = new Map();
+
+async function draw(state, changed) {
+  const canvas = $("canvas");
+  if (!state.blocks.length) {
+    canvas.innerHTML = '<p class="empty">Roomy is listening.</p>';
+    rendered.clear();
+    return;
+  }
+  canvas.innerHTML = "";
+
+  for (const b of state.blocks) {
+    const el = document.createElement("section");
+    el.className = "block" + (changed.includes(b.id) ? " changed" : "");
+    el.innerHTML = '<h2></h2><div class="body"></div>';
+    el.querySelector("h2").textContent = b.title;
+    const body = el.querySelector(".body");
+    canvas.append(el);
+
+    const key = b.id + "::" + b.source;
+    if (rendered.has(key)) { body.innerHTML = rendered.get(key); continue; }
+
+    if (b.kind === "mermaid") {
+      try {
+        const { svg } = await mermaid.render("m" + b.id + Date.now(), b.source);
+        rendered.set(key, svg);
+        body.innerHTML = svg;
+      } catch (err) {
+        // The renderer is the authority: tell the server so it can repair or drop.
+        body.textContent = "...";
+        post("/render-error", { id: b.id, error: String(err?.message ?? err) });
+      }
+    } else {
+      const html = b.source
+        .replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])
+        .replace(/^#{2,3} (.*)$/gm, "<h3>$1</h3>")
+        .replace(/^[-*] (.*)$/gm, "<li>$1</li>")
+        .replace(/(<li>.*<\/li>\n?)+/gs, "<ul>$&</ul>")
+        .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+        .replace(/\n{2,}/g, "<br><br>");
+      rendered.set(key, html);
+      body.innerHTML = html;
+    }
+  }
+}
+
+new EventSource("/events").onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+  if (msg.type === "state") {
+    draw(msg.state, msg.changed ?? []);
+  } else if (msg.type === "utterance") {
+    const d = document.createElement("div");
+    d.className = "u";
+    d.innerHTML = "<b></b> <span></span>";
+    d.querySelector("b").textContent = msg.utterance.speaker + ":";
+    d.querySelector("span").textContent = msg.utterance.text;
+    $("log").append(d);
+    $("log").scrollTop = $("log").scrollHeight;
+  } else if (msg.type === "status") {
+    $("status").textContent = msg.note ? "error: " + msg.note : msg.busy ? "thinking..." : "idle";
+  }
+};
+
+const say = (text) => text.trim() && post("/utterance", { speaker: $("speaker").value, text });
+$("text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { say(e.target.value); e.target.value = ""; }
+});
+$("play").onclick = () => {
+  $("log").innerHTML = "";
+  post("/replay", { fixture: $("fixture").value, speed: +$("speed").value });
+};
+$("reset").onclick = () => { $("log").innerHTML = ""; rendered.clear(); post("/reset"); };
+
+// ponytail: Web Speech API - zero infra, Chrome only, no diarization
+// (speaker = whoever owns this tab). Swap for streaming ASR if diarization matters.
+const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+$("mic").onclick = function () {
+  if (!SR) return alert("This browser has no Web Speech API. Use Chrome, or type instead.");
+  if (this._rec) { this._rec.stop(); this._rec = null; this.classList.remove("on"); return; }
+  const rec = new SR();
+  rec.continuous = true; rec.interimResults = false; rec.lang = "en-US";
+  rec.onresult = (e) => {
+    for (let i = e.resultIndex; i < e.results.length; i++) say(e.results[i][0].transcript);
+  };
+  rec.onend = () => { if (this._rec) rec.start(); };  // Chrome stops on silence
+  rec.start(); this._rec = rec; this.classList.add("on");
+};
+</script>

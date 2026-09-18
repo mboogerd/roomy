@@ -1,0 +1,30 @@
+{
+  "name": "incident-review",
+  "description": "Walkthrough of an outage timeline. Exercises sequence diagrams and flowcharts: actors, ordered calls, a failure path.",
+  "utterances": [
+    { "t_ms": 0, "speaker": "Kwame", "text": "Let me walk the timeline and then we talk causes. Nobody jump ahead to fixes." },
+    { "t_ms": 8000, "speaker": "Kwame", "text": "14:02, the deploy of the gateway goes out. Normal rolling deploy, three pods at a time." },
+    { "t_ms": 17000, "speaker": "Lena", "text": "And that deploy included the new auth middleware." },
+    { "t_ms": 22000, "speaker": "Kwame", "text": "Correct. 14:04 the gateway starts calling the auth service on every request instead of using the cached token." },
+    { "t_ms": 32000, "speaker": "Ravi", "text": "Which is roughly a forty times increase in traffic to auth." },
+    { "t_ms": 38000, "speaker": "Kwame", "text": "14:05 auth service latency goes from twelve milliseconds to eight hundred. 14:06 the auth service connection pool to Postgres is exhausted." },
+    { "t_ms": 50000, "speaker": "Lena", "text": "And at that point auth starts returning five hundreds, not timeouts." },
+    { "t_ms": 57000, "speaker": "Kwame", "text": "Right, and here is the bad part. The gateway treats a five hundred from auth as a denied request rather than an error, so users got logged out instead of getting an error page." },
+    { "t_ms": 70000, "speaker": "Ravi", "text": "That is what generated the support spike. People thought their accounts were gone." },
+    { "t_ms": 77000, "speaker": "Kwame", "text": "14:11 first alert fires, on support ticket volume, not on any of our service metrics." },
+    { "t_ms": 86000, "speaker": "Lena", "text": "That is six minutes of nothing. Auth latency should have paged at 14:05." },
+    { "t_ms": 93000, "speaker": "Kwame", "text": "The latency alert exists. It has a ten minute window so it had not tripped yet." },
+    { "t_ms": 101000, "speaker": "Ravi", "text": "14:14 I got paged, 14:19 we identified the deploy as the trigger, 14:22 rollback started, 14:27 fully recovered." },
+    { "t_ms": 112000, "speaker": "Kwame", "text": "So twenty five minutes total, nineteen of it user visible." },
+    { "t_ms": 119000, "speaker": "Lena", "text": "Causes. The middleware change removed the cache lookup, that is the trigger. But the gateway mapping five hundred to denied is the thing that turned a slow site into a logout event." },
+    { "t_ms": 134000, "speaker": "Ravi", "text": "And the connection pool had no ceiling per caller, so auth had no way to shed load." },
+    { "t_ms": 143000, "speaker": "Kwame", "text": "Three separate things then. The change, the error mapping, the missing backpressure." },
+    { "t_ms": 152000, "speaker": "Lena", "text": "Four. The alerting window meant we found out from customers." },
+    { "t_ms": 159000, "speaker": "Kwame", "text": "Four, yes. Now fixes." },
+    { "t_ms": 164000, "speaker": "Ravi", "text": "Error mapping is a one line fix and it is the one that would have made this invisible to users. That first." },
+    { "t_ms": 174000, "speaker": "Lena", "text": "Alert window down to two minutes, that is a config change." },
+    { "t_ms": 181000, "speaker": "Kwame", "text": "Backpressure on auth is the real work. Per caller concurrency limit, shed with a four twenty nine." },
+    { "t_ms": 191000, "speaker": "Ravi", "text": "And a canary step in the gateway deploy so one pod takes traffic for five minutes before the rest go." },
+    { "t_ms": 201000, "speaker": "Kwame", "text": "That is the list. Error mapping and alert window today, backpressure and canary this sprint." }
+  ]
+}

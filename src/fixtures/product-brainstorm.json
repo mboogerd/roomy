@@ -1,0 +1,31 @@
+{
+  "name": "product-brainstorm",
+  "description": "Open brainstorm on onboarding drop-off. Exercises mindmaps: loose branching ideas, little structure, ideas that get clustered late.",
+  "utterances": [
+    { "t_ms": 0, "speaker": "Ines", "text": "So sixty percent of signups never reach the second screen. I want ideas, no filtering yet." },
+    { "t_ms": 9000, "speaker": "Marc", "text": "The first screen asks for a company name and a team size before it shows anything. That is a wall." },
+    { "t_ms": 17000, "speaker": "Ines", "text": "So one direction is just ask for less. Defer everything we can." },
+    { "t_ms": 23000, "speaker": "Sofia", "text": "Or ask for nothing. Let them into a sandbox workspace with fake data and only ask when they want to save something." },
+    { "t_ms": 33000, "speaker": "Marc", "text": "I like that. The other thing is we have no idea what they are trying to do. A picker on screen one, are you here to do X or Y, might let us skip half the setup." },
+    { "t_ms": 45000, "speaker": "Ines", "text": "Intent capture, okay." },
+    { "t_ms": 49000, "speaker": "Sofia", "text": "Templates fall out of that. Pick your use case, get a workspace already populated for it." },
+    { "t_ms": 57000, "speaker": "Marc", "text": "Import is the other one. If they come from a competitor, let them drag in an export file and we build the workspace from it." },
+    { "t_ms": 66000, "speaker": "Ines", "text": "That is a big build though." },
+    { "t_ms": 70000, "speaker": "Marc", "text": "No filtering yet, you said." },
+    { "t_ms": 73000, "speaker": "Ines", "text": "Fair." },
+    { "t_ms": 76000, "speaker": "Sofia", "text": "What about the email verification step? We block on it and the mail takes up to a minute to arrive." },
+    { "t_ms": 85000, "speaker": "Marc", "text": "Let them in unverified and verify in the background. Only gate on invite and billing." },
+    { "t_ms": 93000, "speaker": "Ines", "text": "Okay that might be the single cheapest one on this list." },
+    { "t_ms": 99000, "speaker": "Sofia", "text": "Social login too. We only do email and password." },
+    { "t_ms": 105000, "speaker": "Marc", "text": "Google covers most of our segment." },
+    { "t_ms": 110000, "speaker": "Ines", "text": "Anything on the measurement side? Because I am fairly sure we cannot see where in the screen they bail." },
+    { "t_ms": 120000, "speaker": "Sofia", "text": "We cannot. There is one event for signup started and one for workspace created and nothing in between." },
+    { "t_ms": 129000, "speaker": "Marc", "text": "Field level events then. And a session replay on the signup flow for a week." },
+    { "t_ms": 137000, "speaker": "Ines", "text": "Right. Let me try to group these. There is reduce the ask, which is defer fields, sandbox, no verification gate. There is guide the ask, which is intent picker and templates. There is import. And there is instrumentation." },
+    { "t_ms": 155000, "speaker": "Sofia", "text": "Social login sits under reduce the ask I think." },
+    { "t_ms": 161000, "speaker": "Marc", "text": "And instrumentation is not really a fix, it is what tells us which of the other three to do." },
+    { "t_ms": 170000, "speaker": "Ines", "text": "So instrumentation goes first regardless. Then we pick." },
+    { "t_ms": 177000, "speaker": "Sofia", "text": "Unverified signin is cheap enough that I would just do it alongside." },
+    { "t_ms": 185000, "speaker": "Ines", "text": "Agreed. Instrumentation plus unverified signin this sprint, decide the rest when we can see the drop point." }
+  ]
+}
