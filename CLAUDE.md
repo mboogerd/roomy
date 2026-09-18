@@ -34,6 +34,8 @@ transcript --> Room (windows, debounces) --> LLM --> Op[] --> validateOp --> app
 
 ## Rules
 
+- `Room.say(utterance)` is the only way transcript enters the system. Fixture replay, the
+  browser mic, and any future meeting bot all converge there. Do not add a second ingest path.
 - The LLM only ever emits ops. It never emits HTML, and it never renders anything.
 - The browser is the authority on whether a diagram renders. Server-side validation is
   deliberately shallow (`validateOp`); the client reports failures to `/render-error`.
@@ -42,7 +44,13 @@ transcript --> Room (windows, debounces) --> LLM --> Op[] --> validateOp --> app
 - Every non-trivial change leaves one runnable check in `test/`.
 - Mark deliberate simplifications with a `ponytail:` comment naming the ceiling.
 
+## Where this is going
+
+Roomy does not integrate with a meeting tool's audio. Each participant opens Roomy beside
+whatever call they are on, so one browser transcribes one person and speaker identity comes
+from the connection. That makes diarization free, and it is why contract 5 above matters.
+
 ## Not in scope for the PoC
 
-Auth, persistence, multi-tenancy, real Teams/Zoom integration, PlantUML, freestyle HTML
-blocks, speaker diarization. Each is deliberately deferred — see BACKLOG.md.
+Auth, persistence, PlantUML, freestyle HTML blocks, and any vendor-specific meeting
+integration. Each is deliberately deferred — see BACKLOG.md.
