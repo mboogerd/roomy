@@ -1,14 +1,14 @@
-import Anthropic from "@anthropic-ai/sdk";
 import type { CanvasState } from "./canvas.ts";
 import type { Utterance } from "./transcript.ts";
 import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt } from "./prompt.ts";
+import { pickTransport } from "./transport.ts";
 
 // Two-tier: cheap model on every tick, capable model on the periodic rethink.
 export const TICK_MODEL = "claude-haiku-4-5";
 export const RESTRUCTURE_MODEL = "claude-sonnet-5";
 
-// ROOMY_ prefix so the key never collides with the Claude CLI auth precedence inside evaluator containers.
-const client = new Anthropic({ apiKey: process.env.ROOMY_ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY });
+// Which transport carries a prompt (API, Bedrock, or the claude CLI) is decided by ROOMY_LLM; see transport.ts.
+const transport = pickTransport();
 
 /**
  * ponytail: the ops array is requested in prose and parsed leniently, not via
@@ -28,13 +28,7 @@ function parseOps(text: string): unknown[] {
 }
 
 async function complete(model: string, system: string, user: string, maxTokens = 4000): Promise<string> {
-  const res = await client.messages.create({
-    model,
-    max_tokens: maxTokens,
-    system,
-    messages: [{ role: "user", content: user }],
-  });
-  return res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  return (await transport(model, system, user, maxTokens)).text;
 }
 
 export async function tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {

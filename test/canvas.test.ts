@@ -78,3 +78,11 @@ describe("kind coercion", () => {
     expect(r.ok && r.op.op === "upsert" && r.op.kind).toBe("mermaid");
   });
 });
+
+describe("transport selection", () => {
+  it("resolves the three backends and rejects anything else", async () => {
+    const { pickTransport } = await import("../src/transport.ts");
+    for (const n of ["api", "bedrock", "cli"]) expect(typeof pickTransport(n)).toBe("function");
+    expect(() => pickTransport("gpt")).toThrow(/ROOMY_LLM/);
+  });
+});

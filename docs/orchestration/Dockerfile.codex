@@ -2,7 +2,8 @@
 FROM node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates procps \
     && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @openai/codex
+# claude-code is here for the app under test (ROOMY_LLM=cli), not for the worker itself
+RUN npm install -g @openai/codex @anthropic-ai/claude-code
 USER node
 ENV HOME=/home/node
 # bind mounts can surface with a foreign uid; git refuses "dubious ownership" otherwise

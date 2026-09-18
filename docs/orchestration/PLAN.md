@@ -42,18 +42,23 @@ docker build -q -f docs/orchestration/Dockerfile.claude -t roomy-worker-claude .
 ```
 
 **Preflight** — a human runs `docs/orchestration/preflight.sh` once before you start.
-It builds the images, proves both worker kinds can authenticate and act, and makes one
-live call with the app's API key so an empty credit balance fails here, not in Wave 1. If the human
+It builds the images, proves both worker kinds can authenticate and act, and checks the
+app's LLM backend (`ROOMY_LLM`) so a bad setup fails here, not in Wave 1. If the human
 has not reported `PREFLIGHT OK`, STOP and ask; do not improvise auth.
 
 **Auth.**
 - Codex: `~/.codex/auth.json` on the host (ChatGPT login). Copy it into a per-worker
   directory mounted read-write at `/home/node/.codex` so token refresh can write.
   Re-copy from the host for every dispatch; the host copy is the source of truth.
-- Claude: `CLAUDE_CODE_OAUTH_TOKEN` forwarded with `-e`. **Never forward
+- Claude: `CLAUDE_CODE_OAUTH_TOKEN` forwarded with `-e` to **both** worker kinds — the
+  evaluator uses it directly, and the app under test uses it through the `claude` CLI
+  when `ROOMY_LLM=cli` (the default for this run; `src/transport.ts`). **Never forward
   `ANTHROPIC_API_KEY`** — it outranks the OAuth token inside `claude` and silently moves
-  the evaluator to metered billing. The app under test reads
-  `ROOMY_ANTHROPIC_API_KEY` instead (`src/llm.ts`); forward that one to both kinds.
+  everything to metered billing. Forward `ROOMY_LLM` to both kinds. Only if the human
+  chose `ROOMY_LLM=api` forward `ROOMY_ANTHROPIC_API_KEY` as well.
+- The token must come from a Pro/Max login. If the human's own Claude Code uses an
+  `apiKeyHelper` (`claude auth status` → `authMethod: api_key`), `claude setup-token`
+  still mints a subscription token after `/login`; the helper only affects their shell.
 - Network: never `--network none`; both CLIs hang forever with empty logs.
 
 **Run directory.** `RUN=$HOME/.roomy-run`; clones in `$RUN/clones/<id>`, Codex homes in
@@ -70,7 +75,7 @@ mkdir -p $RUN/codex-home-<id> && cp ~/.codex/auth.json $RUN/codex-home-<id>/
 docker run -d --name <id> \
   -v $RUN/clones/<id>:/work -v <repo>/docs/tickets:/tickets:ro \
   -v $RUN/codex-home-<id>:/home/node/.codex \
-  -e ROOMY_ANTHROPIC_API_KEY -w /work \
+  -e CLAUDE_CODE_OAUTH_TOKEN -e ROOMY_LLM -w /work \
   roomy-worker-codex codex exec --dangerously-bypass-approvals-and-sandbox --ephemeral \
   -m gpt-5.6-luna -c model_reasoning_effort=max \
   -o /home/node/.codex/last-message.md \
@@ -85,7 +90,7 @@ and the evaluator's diagnosis appended to the prompt.
 ```bash
 docker run -d --name eval-<id> \
   -v $RUN/clones/<id>:/work -v <repo>/docs/tickets:/tickets:ro \
-  -e CLAUDE_CODE_OAUTH_TOKEN -e ROOMY_ANTHROPIC_API_KEY -w /work \
+  -e CLAUDE_CODE_OAUTH_TOKEN -e ROOMY_LLM -w /work \
   roomy-worker-claude claude -p "You are the evaluator for ticket /tickets/<id>.md. The branch in /work contains an implementer's attempt; the base is <wave-base-commit>. Judge it against the ticket and nothing else, on three axes: (1) faithfulness — every acceptance criterion met as written; (2) testing — each criterion is covered by an automated test that would fail if the work were wrong, and no test touches the network; (3) architectural cleanliness — CLAUDE.md rules and the frozen contracts in BACKLOG.md hold, no unrequested abstraction, no scope creep. Repair is the default: fix anything within the ticket's scope yourself, including missing tests, and commit your repairs on this branch. Reject only with a written repair-versus-redo estimate concluding redo is cheaper. Run the ticket's Verify commands last. Your final message is a report: verdict PASS or REJECT, what you repaired, files touched beyond the ticket's claim, and the estimate if rejecting." \
   --model claude-opus-5 --dangerously-skip-permissions
 ```
@@ -130,7 +135,9 @@ docker rm <id> eval-<id>; rm -rf $RUN/clones/<id> $RUN/codex-home-<id>
 | either: past deadline, logs active | slow, not hung | read logs; extend once, or kill and re-split |
 | either: exit 0, zero commits ahead | failed without failing | read full logs; fix dispatch or ticket; re-dispatch |
 | exit 137 unrequested | OOM or external kill | `docker inspect --format '{{.State.OOMKilled}}'`; raise memory |
-| implementer or evaluator report: `npm run eval` failed with HTTP 400 `credit balance` / 402 / `billing` | the app's API account ran out of prepaid credit | this is the human's, not a ticket failure: STOP dispatching anything that runs evals, mark the ticket `blocked (billing)`, ask the human to add credits, re-dispatch. Tickets whose Verify is tests-only may continue |
+| implementer or evaluator report: `npm run eval` failed with `credit balance` / 402 / `billing` (only when `ROOMY_LLM=api`) | the app's API account ran out of prepaid credit | the human's problem, not a ticket failure: STOP dispatching anything that runs evals, mark the ticket `blocked (billing)`, ask the human, re-dispatch. Tests-only tickets may continue |
+| any claude process: 429, `rate limit`, or `usage limit reached … resets at` | the subscription's 5-hour window is exhausted — evaluators and `ROOMY_LLM=cli` evals share it | not a failure: note the reset time, let running Codex implementers finish (they do not use it), dispatch no evaluator or eval-running ticket until the reset, then continue. Log the pause here |
+| `claude cli failed … apiKeyHelper` in an eval report | the worker inherited a settings file with an `apiKeyHelper` | workers must not mount `~/.claude`; check the dispatch mounts |
 | evaluator PASS but `npm test` fails on merged `main` | wave-gate collision or environment drift | serialize; rebase the later branch; re-run its evaluator |
 
 **Recovery invariant.** Before any re-dispatch:
@@ -187,7 +194,7 @@ presence). Expect a clean merge; if not, T1 merges first.
 
 **Checkpoint C1 — verification.** Evaluator per ticket, dispatched per Sandbox. Merge on
 PASS. Then the repo-wide gate. T1's evaluator also runs `npm run eval -- incident-review`
-once (needs `ROOMY_ANTHROPIC_API_KEY`) and attaches the summary line — that is the
+once (through the configured `ROOMY_LLM` backend) and attaches the summary line — that is the
 harness's own smoke test.
 
 ## Wave 2 — the journal · branches from `main` after C1

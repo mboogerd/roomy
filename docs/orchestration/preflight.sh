@@ -2,7 +2,8 @@
 # Run once, by a human, before the orchestrator starts. Proves both worker kinds can
 # authenticate and act headlessly inside Docker. Seconds when healthy.
 #
-#   export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # interactive, once
+#   export CLAUDE_CODE_OAUTH_TOKEN=$(claude setup-token)   # interactive, once; needs a Pro/Max login
+#   export ROOMY_LLM=cli                                     # or api (+ROOMY_ANTHROPIC_API_KEY) or bedrock
 #   bash docs/orchestration/preflight.sh
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,14 +26,20 @@ echo "== claude: auth is CLAUDE_CODE_OAUTH_TOKEN; ANTHROPIC_API_KEY must NOT be 
 docker run --rm -e CLAUDE_CODE_OAUTH_TOKEN -w /tmp roomy-worker-claude \
   claude -p "say ok" --model claude-opus-5 --dangerously-skip-permissions
 
-echo "== app under test: workers need ROOMY_ANTHROPIC_API_KEY for the eval harness"
-: "${ROOMY_ANTHROPIC_API_KEY:=${ANTHROPIC_API_KEY:?set ROOMY_ANTHROPIC_API_KEY}}"
-export ROOMY_ANTHROPIC_API_KEY
-code=$(curl -s -o /tmp/roomy-preflight.json -w "%{http_code}" https://api.anthropic.com/v1/messages \
-  -H "x-api-key: $ROOMY_ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
-  -d '{"model":"claude-haiku-4-5","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
-[ "$code" = "200" ] || { echo "API key check failed (HTTP $code): $(cat /tmp/roomy-preflight.json)"; echo "Usually: no credit balance. Add credits in the Console, then re-run."; exit 1; }
-docker run --rm -v "$PWD:/work:ro" -e ROOMY_ANTHROPIC_API_KEY -w /work roomy-worker-claude \
+echo "== app under test: ROOMY_LLM=${ROOMY_LLM:=cli}"
+export ROOMY_LLM
+case "$ROOMY_LLM" in
+  cli) echo "   uses the claude CLI with CLAUDE_CODE_OAUTH_TOKEN (proved above); nothing more to check" ;;
+  api)
+    : "${ROOMY_ANTHROPIC_API_KEY:?set ROOMY_ANTHROPIC_API_KEY for ROOMY_LLM=api}"
+    code=$(curl -s -o /tmp/roomy-preflight.json -w "%{http_code}" https://api.anthropic.com/v1/messages \
+      -H "x-api-key: $ROOMY_ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+      -d '{"model":"claude-haiku-4-5","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
+    [ "$code" = "200" ] || { echo "API key check failed (HTTP $code): $(cat /tmp/roomy-preflight.json)"; exit 1; } ;;
+  bedrock) echo "   bedrock: workers need AWS credentials forwarded; not covered by this script" ;;
+  *) echo "unknown ROOMY_LLM=$ROOMY_LLM"; exit 1 ;;
+esac
+docker run --rm -v "$PWD:/work:ro" -w /work roomy-worker-claude \
   sh -c 'npm ci --silent --prefix /tmp/app --cache /tmp/npm >/dev/null 2>&1; echo "toolchain ok"'
 
 echo "PREFLIGHT OK"
