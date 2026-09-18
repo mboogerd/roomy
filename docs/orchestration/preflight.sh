@@ -27,6 +27,11 @@ docker run --rm -e CLAUDE_CODE_OAUTH_TOKEN -w /tmp roomy-worker-claude \
 
 echo "== app under test: workers need ROOMY_ANTHROPIC_API_KEY for the eval harness"
 : "${ROOMY_ANTHROPIC_API_KEY:=${ANTHROPIC_API_KEY:?set ROOMY_ANTHROPIC_API_KEY}}"
+export ROOMY_ANTHROPIC_API_KEY
+code=$(curl -s -o /tmp/roomy-preflight.json -w "%{http_code}" https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ROOMY_ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+  -d '{"model":"claude-haiku-4-5","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}')
+[ "$code" = "200" ] || { echo "API key check failed (HTTP $code): $(cat /tmp/roomy-preflight.json)"; echo "Usually: no credit balance. Add credits in the Console, then re-run."; exit 1; }
 docker run --rm -v "$PWD:/work:ro" -e ROOMY_ANTHROPIC_API_KEY -w /work roomy-worker-claude \
   sh -c 'npm ci --silent --prefix /tmp/app --cache /tmp/npm >/dev/null 2>&1; echo "toolchain ok"'
 

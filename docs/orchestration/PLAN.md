@@ -42,7 +42,8 @@ docker build -q -f docs/orchestration/Dockerfile.claude -t roomy-worker-claude .
 ```
 
 **Preflight** — a human runs `docs/orchestration/preflight.sh` once before you start.
-It builds the images and proves both worker kinds can authenticate and act. If the human
+It builds the images, proves both worker kinds can authenticate and act, and makes one
+live call with the app's API key so an empty credit balance fails here, not in Wave 1. If the human
 has not reported `PREFLIGHT OK`, STOP and ask; do not improvise auth.
 
 **Auth.**
@@ -129,6 +130,7 @@ docker rm <id> eval-<id>; rm -rf $RUN/clones/<id> $RUN/codex-home-<id>
 | either: past deadline, logs active | slow, not hung | read logs; extend once, or kill and re-split |
 | either: exit 0, zero commits ahead | failed without failing | read full logs; fix dispatch or ticket; re-dispatch |
 | exit 137 unrequested | OOM or external kill | `docker inspect --format '{{.State.OOMKilled}}'`; raise memory |
+| implementer or evaluator report: `npm run eval` failed with HTTP 400 `credit balance` / 402 / `billing` | the app's API account ran out of prepaid credit | this is the human's, not a ticket failure: STOP dispatching anything that runs evals, mark the ticket `blocked (billing)`, ask the human to add credits, re-dispatch. Tickets whose Verify is tests-only may continue |
 | evaluator PASS but `npm test` fails on merged `main` | wave-gate collision or environment drift | serialize; rebase the later branch; re-run its evaluator |
 
 **Recovery invariant.** Before any re-dispatch:
