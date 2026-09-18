@@ -26,7 +26,8 @@ transcript --> Room (windows, debounces) --> LLM --> Op[] --> validateOp --> app
 
 - `src/canvas.ts` — **the contract.** Block/Op types, validation, `applyOps`. Everything
   depends on this. Changing it means changing the prompt, the server and the client together.
-- `src/room.ts` — the tick loop. Cadence, windowing, rolling summary, restructure schedule.
+- `src/room.ts` — the live pipeline. Currently a timer-driven tick loop; `docs/pipeline.md`
+  specifies the journal that replaces it (backlog T3).
 - `src/llm.ts` — two-tier models: Haiku 4.5 on every tick, Sonnet 5 on the periodic rethink.
 - `src/prompt.ts` — all prompt text. Nothing else in the repo contains prompt strings.
 - `src/server.ts` — node:http + SSE. No framework, no websockets, no database.

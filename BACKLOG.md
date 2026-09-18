@@ -1,6 +1,7 @@
 # Roomy backlog
 
 Written to be executed by agents with little supervision. Read CLAUDE.md first.
+The live pipeline is specified in `docs/pipeline.md`; T3 implements it.
 
 ## Where this is going
 
@@ -27,7 +28,8 @@ Do not change these without a human. Every ticket below assumes they hold.
    bot all converge on that one call. Never let a transcript source reach into `Room`'s
    internals, and never add a second ingest path. This seam is what makes the meeting-tool
    transition cheap — protect it.
-6. No database, no auth, no build step for the client.
+6. The three journal invariants in `docs/pipeline.md`, once T3 lands.
+7. No database, no auth, no build step for the client.
 
 ## Definition of done, every ticket
 
@@ -44,24 +46,23 @@ Do not change these without a human. Every ticket below assumes they hold.
 ### T1 · Offline eval harness
 **Files:** new `src/eval.ts`, `package.json` (one script line)
 Run a fixture end to end with no server and no browser: feed utterances through the same
-`Room` tick logic, dump the final canvas to `evals/<fixture>-<timestamp>.md` (mermaid
-sources in fenced blocks, so a human can skim it), and print a one-line summary —
-tick count, ops applied, ops rejected with reasons, blocks by kind, wall time, token usage.
+`Room` logic, dump the final canvas to `evals/<fixture>-<timestamp>.md` (mermaid sources
+in fenced blocks, so a human can skim it), and print a one-line summary — LLM calls made,
+ops applied, ops rejected with reasons, blocks by kind, wall time, token usage.
 
 Real timing is pointless here: drive `Room` directly rather than sleeping through a replay.
-The harness must not require a running server.
-
-**Note:** T2 runs concurrently and touches `Room`. Its changes to `subscribe` are additive;
-if you hit a conflict, rebase onto T2 rather than working around it.
+The harness must not require a running server. Keep the harness's coupling to `Room` to
+`say()` and a way to wait for quiescence — T3 rewrites `Room`'s internals and will need to
+keep this harness working.
 
 **Done when:** `npm run eval -- architecture-debate` writes a readable report for all three
 fixtures and prints the rejected-op reasons. Include the three reports in your summary.
 **Do not:** build a scoring model, an LLM judge, or a comparison UI. Reading the output is the eval.
 
 ### T2 · Rooms, participants, and free diarization
-**Files:** `src/server.ts`, `src/room.ts`, `public/index.html`
-This is the ticket that turns a single-tab demo into something a group can use, and it is
-the foundation for every meeting-tool scenario. Read "Where this is going" above first.
+**Files:** `src/server.ts`, `src/room.ts` (subscribe/presence only), `public/index.html`
+This turns a single-tab demo into something a group can use, and it is the foundation for
+every meeting-tool scenario. Read "Where this is going" above first.
 
 - `/r/<slug>` creates or joins a room. `/` redirects to a freshly generated slug. Each room
   is its own `Room` instance with its own SSE stream, canvas and transcript.
@@ -71,6 +72,8 @@ the foundation for every meeting-tool scenario. Read "Where this is going" above
 - Presence: the room knows who is connected and the client shows it. Departures included.
 - Rooms with no subscribers for ten minutes are dropped, timer and all.
 - Replay targets a specific room.
+
+Stay out of the tick loop in `room.ts`; T3 replaces it next wave.
 
 **Done when:** two browser windows on the same slug, with different names, see one shared
 canvas; utterances from each are attributed correctly in the transcript and in the
@@ -83,23 +86,29 @@ unguessable enough for a PoC — say so in a `ponytail:` comment rather than bui
 
 ## Wave 2 — parallel, after Wave 1
 
-### T3 · Prompt hillclimb on diagram choice
-**Files:** `src/prompt.ts` (and `src/eval.ts` only if the harness needs a knob)
-Depends on T1. The tick model over-reaches for markdown and under-uses sequence, state and
-class diagrams. Using the eval harness, iterate on `src/prompt.ts` until each fixture
-produces at least one diagram that a participant would recognise as the shape of their own
-conversation: the architecture debate should yield a deliberation structure showing the
-disagreement, the brainstorm a mindmap reflecting the late regrouping, the incident review
-a timeline or sequence plus causes.
+### T3 · Replace the tick loop with the journal
+**Files:** `src/room.ts`, `src/prompt.ts` (additive: a speculate prompt), `src/llm.ts`, `src/eval.ts`
+Implement `docs/pipeline.md`. Read it twice. The three invariants are the acceptance
+criteria; everything else in the doc is guidance.
 
-Now that utterances carry real per-person identity (T2), positions on the canvas should be
-attributable to the people who hold them. Use that.
+Scope for this ticket: journal, segmentation policy, speculate, commit, carry-forward.
+**Not amend** — leave a `ponytail:` comment where it would go, and report how often a
+segment closed early enough that amend would have helped.
 
-Record what you tried, including what made things worse.
+The timer, `MIN_NEW_CHARS`, and the raw-utterance window go away. `RESTRUCTURE_EVERY`
+stays, re-expressed as "every N commits". `Room.say()` and `subscribe()` keep their
+signatures; the SSE `state` message keeps its shape. Clients cannot tell the difference
+except that the canvas moves sooner.
 
-**Done when:** all three fixtures hit that bar, zero rejected ops across all three,
-and `npm test` still passes.
-**Do not:** add diagram types beyond the mermaid set already in `MERMAID_HEADS`.
+The eval harness from T1 is how you prove it. Add to its summary: segments committed,
+segments carried forward, speculative calls made, speculative results discarded as stale.
+
+**Done when:** all three fixtures replay through the journal with zero rejected ops; a
+`test/journal.test.ts` exercises segmentation and carry-forward with a stubbed LLM (no
+network); the eval summary shows speculative calls coalescing under fast replay rather than
+queueing; and you demonstrate invariant 2 by showing that an unchanged block keeps its
+exact source across three consecutive speculations.
+**Do not:** implement amend, per-speaker live heads, or any delta computation between op sets.
 
 ### T4 · Client visual pass
 **Files:** `public/index.html`
@@ -118,17 +127,30 @@ with two participants connected. No new dependencies; mermaid stays the only CDN
 
 ## Wave 3 — parallel, after Wave 2
 
-### T5 · Make the restructure pass earn its cost
-**Files:** `src/room.ts`, `src/prompt.ts`
-The Sonnet restructure pass (`RESTRUCTURE_EVERY`) has never been observed — fixtures are
-too short to reach 15 ticks. Verify it fires, verify it improves the canvas rather than
-churning it, and tune cadence and prompt. Ids for surviving ideas must be preserved (the
-canvas must not visibly rebuild itself), stale blocks must actually get deleted, and the
-pass must not fire when the canvas has not meaningfully grown since the last one.
+### T5 · Prompt hillclimb, and make the restructure pass earn its cost
+**Files:** `src/prompt.ts`, cadence constants in `src/room.ts`
+Depends on T1 and T3 — tuning the prompt before the loop was rewritten would have meant
+tuning it twice.
 
-**Done when:** show a before/after canvas across a restructure on two fixtures, and state
-what you changed about the cadence and why.
-**Do not:** add a third model tier or a separate restructure pipeline.
+Part one, diagram choice. The model over-reaches for markdown and under-uses sequence,
+state and class diagrams. Using the eval harness, iterate until each fixture produces at
+least one diagram a participant would recognise as the shape of their own conversation:
+the architecture debate a deliberation structure showing the disagreement, the brainstorm a
+mindmap reflecting the late regrouping, the incident review a timeline or sequence plus
+causes. Utterances carry real per-person identity now; positions on the canvas should be
+attributable to the people who hold them. Speculate and commit prompts may diverge.
+
+Part two, restructure. The Sonnet pass has never been observed. Verify it fires, verify it
+improves the canvas rather than churning it. Ids for surviving ideas must be preserved,
+stale blocks must actually get deleted, and it must not fire when the canvas has not
+meaningfully grown since the last time.
+
+Record what you tried, including what made things worse.
+
+**Done when:** all three fixtures hit the diagram bar with zero rejected ops; a before/after
+canvas across a restructure on two fixtures; `npm test` passes.
+**Do not:** add diagram types beyond `MERMAID_HEADS`, a third model tier, or a separate
+restructure pipeline.
 
 ### T6 · Export the canvas
 **Files:** `src/server.ts`, `public/index.html`
@@ -147,13 +169,13 @@ open correctly with no network access. This is how a meeting's output leaves Roo
 **Files:** `src/room.ts`, `src/prompt.ts`, `public/index.html`
 People will want to aim it: "Roomy, draw that as a sequence diagram", "drop the timeline",
 "focus on the auth part". Detect direct address in the utterance stream and route those
-utterances as instructions on the next tick rather than as conversation to be summarised.
+segments as instructions on the next commit rather than as conversation to be drawn.
 
 Keep detection dumb and deterministic — a leading "roomy" is enough. The interesting part
 is the prompt path, not the parsing.
 
 **Done when:** during a replay you can inject a steering utterance and show the canvas
-responding on the next tick.
+responding on the next commit.
 **Do not:** build a chat UI, a command grammar, or model-based intent classification.
 
 ### T8 · Harden the ingest path for an external transcript source
@@ -175,12 +197,17 @@ the canvas builds from it, and an unauthenticated post is refused.
 
 ## Deferred, needs a human decision
 
+- **Amend** (`docs/pipeline.md`). Reopen the last committed segment when its speaker resumes
+  within ~2 s. Decide after T3 reports how often it would have mattered.
 - **Acoustic crosstalk in co-located rooms.** One browser per speaker works when everyone
   is remote with headsets. Laptops around a table each hear the whole room, so the same
   sentence arrives three times under three names. Likely fix is a "one mic in this room"
   mode. Not a blocker for the PoC; it is a blocker for a demo held in person.
-- **Web Speech sends audio to Google.** Chrome's implementation is a cloud service. Fine
-  for a PoC, a real consideration for a meeting tool, and an argument for streaming ASR.
+- **Web Speech sends audio to Google.** Chrome's implementation is a cloud service; recent
+  Chrome has an on-device option worth checking. An argument for streaming ASR otherwise.
+- **Per-room glossary.** Proper nouns end up as node labels, and Web Speech mangles them.
+  A short list of project, service and people names fed into the prompt would fix the one
+  ASR failure that is visible on the canvas. Ten lines; slot next to T5 if wanted.
 - **Streaming ASR** (Deepgram / AssemblyAI). Better transcripts, and a vendor relationship.
   With T2 in place, diarization is no longer the reason to want it. Needs a key.
 - **Freestyle HTML blocks.** The `Block.kind` seam allows it. Deliberately not opened:
