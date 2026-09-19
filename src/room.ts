@@ -13,7 +13,8 @@ export type ServerMsg =
   // Full state on every change, plus which ids moved, so the client needs no op applier.
   | { type: "state"; state: CanvasState; changed: string[] }
   | { type: "utterance"; utterance: Utterance }
-  | { type: "status"; busy: boolean; note?: string };
+  | { type: "status"; busy: boolean; note?: string }
+  | { type: "presence"; people: string[] };
 
 /** One conversation. In-memory, single instance. Persistence is not a PoC concern. */
 export class Room {
@@ -25,12 +26,26 @@ export class Room {
   private inFlight = false;
   private ticks = 0;
   private listeners = new Set<Listener>();
+  private names = new Map<Listener, string>();
   private timer?: NodeJS.Timeout;
 
-  subscribe(fn: Listener): () => void {
+  subscribe(fn: Listener, name = "Someone"): () => void {
+    const before = this.people();
     this.listeners.add(fn);
+    this.names.set(fn, name);
     fn({ type: "state", state: this.state, changed: [] });
-    return () => this.listeners.delete(fn);
+    if (!samePeople(before, this.people())) this.emit({ type: "presence", people: this.people() });
+    return () => {
+      if (!this.listeners.has(fn)) return;
+      const previous = this.people();
+      this.listeners.delete(fn);
+      this.names.delete(fn);
+      if (!samePeople(previous, this.people())) this.emit({ type: "presence", people: this.people() });
+    };
+  }
+
+  private people() {
+    return [...new Set(this.names.values())].sort();
   }
 
   private emit(msg: ServerMsg) {
@@ -120,4 +135,8 @@ export class Room {
       this.commit([{ op: "delete", id }]);
     }
   }
+}
+
+function samePeople(a: string[], b: string[]) {
+  return a.length === b.length && a.every((person, i) => person === b[i]);
 }
