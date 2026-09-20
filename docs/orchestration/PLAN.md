@@ -189,8 +189,8 @@ presence). Expect a clean merge; if not, T1 merges first.
 
 | Ticket | Nature | Model | Session | Branch | Evaluator | Status |
 |---|---|---|---|---|---|---|
-| T1 | Stub-LLM acceptance suite + offline eval reports | gpt-5.6-luna@max | fresh | ticket/T1 | claude-opus-5 | not-started |
-| T2 | Rooms, participant identity, presence, reaping | gpt-5.6-luna@max | fresh | ticket/T2 | claude-opus-5 | not-started |
+| T1 | Stub-LLM acceptance suite + offline eval reports | gpt-5.6-luna@max | fresh | ticket/T1 | claude-opus-5 | merged |
+| T2 | Rooms, participant identity, presence, reaping | gpt-5.6-luna@max | fresh | ticket/T2 | claude-opus-5 | merged |
 
 **Checkpoint C1 — verification.** Evaluator per ticket, dispatched per Sandbox. Merge on
 PASS. Then the repo-wide gate. T1's evaluator also runs `npm run eval -- incident-review`
@@ -268,4 +268,11 @@ and the C2b screenshots' verdict.
 
 ## Status
 
-Run not started. Preflight: not yet reported. Fallback decisions: none.
+Preflight: PREFLIGHT OK. Dispatch goes through `docs/orchestration/dispatch.sh` (whitelisted); the
+safety classifier blocks raw `docker run` with the bypass flags. Fallback decisions: none.
+
+- Wave 1: T1, T2 merged (evaluators PASS after repair); gate green on main (31 tests).
+- Finding: Codex and Claude Code both scrub credentials from subprocess env, so `npm run eval`
+  with `ROOMY_LLM=cli` cannot authenticate inside any worker. Real evals run on the HOST by the
+  orchestrator (from a clean clone of the branch or main) and are attached as evidence.
+- zsh gotcha: write `${id}` not `$id` before a colon (`$id:refs` is a zsh modifier).
