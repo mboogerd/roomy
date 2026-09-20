@@ -59,7 +59,6 @@
     border-radius: 12px;
     background: var(--panel);
   }
-  .block.sequence { grid-column: span 2; }
   .block.markdown { width: 100%; max-width: 28rem; }
   .block.changed { animation: block-change 1.25s ease-out; }
   .block.provisional {
@@ -205,9 +204,13 @@
       grid-template-rows: minmax(0, 1fr) minmax(20rem, 44vh);
     }
     #canvas { grid-template-columns: minmax(0, 1fr); padding: 20px; }
-    .block.sequence { grid-column: auto; }
     .block.markdown { max-width: none; }
     aside { border-top: 1px solid var(--line); border-left: 0; }
+  }
+  /* Only once the board is wide enough for two 300px tracks; spanning two columns in a
+     one-column grid would add an implicit track and scroll the canvas sideways. */
+  @media (min-width: 1100px) {
+    .block.sequence { grid-column: span 2; }
   }
   @media (prefers-reduced-motion: reduce) {
     .block.changed, button.recording .mic-dot { animation-duration: 1ms; }
@@ -290,6 +293,8 @@ async function draw(state, changed = [], speculative = []) {
   }
   canvas.innerHTML = "";
   for (const b of state.blocks) {
+    // A newer state arrived while we were awaiting a render: that draw owns the canvas now.
+    if (version !== drawVersion) return;
     const isSpeculative = speculative.includes(b.id);
     const el = document.createElement("section");
     el.className = blockClasses(b, isSpeculative) + (changed.includes(b.id) ? " changed" : "");
