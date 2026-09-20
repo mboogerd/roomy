@@ -25,6 +25,8 @@
   aside { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
   #log { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
   .u { font-size:13px; } .u b { color:var(--accent); font-weight:600; }
+  #presence { padding:10px 14px; color:var(--mut); font-size:12px; border-bottom:1px solid var(--line); }
+  #identity { padding:8px 12px 0; color:var(--mut); font-size:12px; }
   .bar { border-top:1px solid var(--line); padding:10px; display:flex; gap:6px; flex-wrap:wrap; }
   input, button, select { font:inherit; padding:6px 10px; border:1px solid var(--line);
                           border-radius:6px; background:var(--bg); color:var(--fg); }
@@ -36,9 +38,10 @@
 
 <main id="canvas"><p class="empty">Roomy is listening. Start talking, or replay a fixture.</p></main>
 <aside>
+  <div id="presence">No one here yet</div>
+  <div id="identity"></div>
   <div id="log"></div>
   <div class="bar">
-    <input id="speaker" value="Me" style="flex:0 0 70px">
     <input id="text" placeholder="Type what was said...">
     <button id="mic" title="Web Speech API, Chrome only">mic</button>
   </div>
@@ -61,7 +64,16 @@ const dark = matchMedia("(prefers-color-scheme: dark)").matches;
 mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "loose" });
 
 const $ = (id) => document.getElementById(id);
-const post = (path, body) => fetch(path, {
+const roomPath = location.pathname.replace(/\/$/, "");
+const nameKey = "roomy-name";
+let name = localStorage.getItem(nameKey);
+if (!name) {
+  name = (window.prompt("What is your name?", "") ?? "").trim() || "Someone";
+  localStorage.setItem(nameKey, name);
+}
+$("identity").textContent = "you: " + name;
+
+const post = (path, body) => fetch(`${roomPath}/${path}`, {
   method: "POST", headers: { "content-type": "application/json" },
   body: JSON.stringify(body ?? {}),
 });
@@ -97,7 +109,7 @@ async function draw(state, changed) {
       } catch (err) {
         // The renderer is the authority: tell the server so it can repair or drop.
         body.textContent = "...";
-        post("/render-error", { id: b.id, error: String(err?.message ?? err) });
+        post("render-error", { id: b.id, error: String(err?.message ?? err) });
       }
     } else {
       const html = b.source
@@ -113,7 +125,9 @@ async function draw(state, changed) {
   }
 }
 
-new EventSource("/events").onmessage = (e) => {
+const events = new URL(`${roomPath}/events`, location.href);
+events.searchParams.set("name", name);
+new EventSource(events).onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === "state") {
     draw(msg.state, msg.changed ?? []);
@@ -125,20 +139,22 @@ new EventSource("/events").onmessage = (e) => {
     d.querySelector("span").textContent = msg.utterance.text;
     $("log").append(d);
     $("log").scrollTop = $("log").scrollHeight;
+  } else if (msg.type === "presence") {
+    $("presence").textContent = msg.people.length ? "here: " + msg.people.join(", ") : "No one here yet";
   } else if (msg.type === "status") {
     $("status").textContent = msg.note ? "error: " + msg.note : msg.busy ? "thinking..." : "idle";
   }
 };
 
-const say = (text) => text.trim() && post("/utterance", { speaker: $("speaker").value, text });
+const say = (text) => text.trim() && post("utterance", { speaker: name, text });
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { say(e.target.value); e.target.value = ""; }
 });
 $("play").onclick = () => {
   $("log").innerHTML = "";
-  post("/replay", { fixture: $("fixture").value, speed: +$("speed").value });
+  post("replay", { fixture: $("fixture").value, speed: +$("speed").value });
 };
-$("reset").onclick = () => { $("log").innerHTML = ""; rendered.clear(); post("/reset"); };
+$("reset").onclick = () => { $("log").innerHTML = ""; rendered.clear(); post("reset"); };
 
 // ponytail: Web Speech API - zero infra, Chrome only, no diarization
 // (speaker = whoever owns this tab). Swap for streaming ASR if diarization matters.
