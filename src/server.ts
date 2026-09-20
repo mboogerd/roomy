@@ -1,12 +1,13 @@
 import { createServer as createHttpServer, type Server } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Room } from "./room.ts";
 import type { Fixture, Utterance } from "./transcript.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const DEFAULT_REAP_MS = 10 * 60 * 1000;
+const MAX_JSON_BYTES = 16 * 1024;
 const SLUG = /^[a-z0-9-]{3,40}$/;
 const here = new URL(".", import.meta.url);
 const htmlEscapes: Record<string, string> = {
@@ -150,12 +151,68 @@ export interface RunningServer extends Server {
   ready: Promise<RunningServer>;
 }
 
+class RequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "RequestError";
+    this.status = status;
+  }
+}
+
 const json = (req: import("node:http").IncomingMessage) =>
   new Promise<any>((resolve, reject) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(e); } });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+
+    req.on("data", (chunk: Buffer | string) => {
+      const bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+      size += bytes;
+      if (size > MAX_JSON_BYTES) {
+        fail(new RequestError(413, "request body too large"));
+        req.resume();
+        return;
+      }
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      try {
+        const body = Buffer.concat(chunks).toString("utf8");
+        resolve(body ? JSON.parse(body) : {});
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on("error", (error) => fail(error));
   });
+
+function matchesSecret(header: string | string[] | undefined, expected: string) {
+  if (typeof header !== "string") return false;
+  const actualBytes = Buffer.from(header);
+  const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length) return false;
+  return timingSafeEqual(actualBytes, expectedBytes);
+}
+
+type IngestPayload = { speaker: string; text: string; t_ms?: number };
+
+function isIngestPayload(value: unknown): value is IngestPayload {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return typeof body.speaker === "string" && body.speaker.trim().length > 0
+    && typeof body.text === "string" && body.text.trim().length > 0
+    && (body.t_ms === undefined || (typeof body.t_ms === "number" && Number.isFinite(body.t_ms)));
+}
 
 async function replay(room: Room, name: string, speed: number) {
   const path = fileURLToPath(new URL(`fixtures/${name}.json`, here));
@@ -170,7 +227,7 @@ async function replay(room: Room, name: string, speed: number) {
 }
 
 function slugFromPath(pathname: string) {
-  const match = /^\/r\/([^/]+)(?:\/(events|utterance|render-error|replay|reset|export))?$/.exec(pathname);
+  const match = /^\/r\/([^/]+)(?:\/(events|utterance|ingest|render-error|replay|reset|export))?$/.exec(pathname);
   if (!match) return;
   let slug: string;
   try {
@@ -234,6 +291,14 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
       const route = slugFromPath(url.pathname);
       if (!route) return send(404, { error: "not found" });
 
+      if (route.action === "ingest") {
+        const ingestSecret = process.env.ROOMY_INGEST_SECRET;
+        if (!ingestSecret) return send(404, { error: "not found" });
+        if (req.method === "POST" && !matchesSecret(req.headers["x-roomy-secret"], ingestSecret)) {
+          return send(401, { error: "invalid ingest secret" });
+        }
+      }
+
       if (req.method === "GET" && route.action === "export") {
         const entry = rooms.get(route.slug);
         if (!entry) return send(404, { error: "not found" });
@@ -293,6 +358,24 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
         return send(200, { ok: true });
       }
 
+      if (req.method === "POST" && route.action === "ingest") {
+        let body: any;
+        try {
+          body = await json(req);
+        } catch (error) {
+          if (error instanceof SyntaxError) return send(400, { error: "invalid JSON" });
+          throw error;
+        }
+        if (!isIngestPayload(body)) return send(400, { error: "speaker, text, and optional numeric t_ms required" });
+        const u: Utterance = {
+          t_ms: body.t_ms === undefined ? Date.now() : body.t_ms,
+          speaker: body.speaker,
+          text: body.text,
+        };
+        entry.room.say(u);
+        return send(200, { ok: true });
+      }
+
       if (req.method === "POST" && route.action === "render-error") {
         const body = await json(req);
         void entry.room.renderFailed(String(body.id), String(body.error ?? "render failed"));
@@ -312,6 +395,7 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
 
       send(404, { error: "not found" });
     } catch (err) {
+      if (err instanceof RequestError) return send(err.status, { error: err.message });
       send(500, { error: String(err) });
     }
   });
