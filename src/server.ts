@@ -9,6 +9,129 @@ const PORT = Number(process.env.PORT ?? 3000);
 const DEFAULT_REAP_MS = 10 * 60 * 1000;
 const SLUG = /^[a-z0-9-]{3,40}$/;
 const here = new URL(".", import.meta.url);
+const htmlEscapes: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => htmlEscapes[character]);
+}
+
+// Keep this small conversion in step with the one in public/index.html. The export is
+// deliberately standalone, so the two files do not share browser/server code.
+function markdownToHtml(source: string) {
+  return source
+    .replace(/[&<>"']/g, (character) => htmlEscapes[character])
+    .replace(/^#{2,3} (.*)$/gm, "<h3>$1</h3>")
+    .replace(/^[-*] (.*)$/gm, "<li>$1</li>")
+    .replace(/(<li>.*<\/li>\n?)+/gs, "<ul>$&</ul>")
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/\n{2,}/g, "<br><br>");
+}
+
+const exportStyle = `
+  :root { color-scheme: light dark; --bg: #fbfbfa; --fg: #1d1d1f; --mut: #6b6b70; --line: #dededb; --panel: #f2f2ef; --accent: #3b6fe0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151517; --fg: #e9e9ea; --mut: #9a9aa0; --line: #36363a; --panel: #202024; --accent: #9ab6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { max-width: 68rem; margin: 0 auto; padding: 2.5rem clamp(1rem, 5vw, 4rem); background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  h1, h2, h3, p { margin-top: 0; }
+  h1 { margin-bottom: .35rem; font-size: clamp(1.7rem, 4vw, 2.4rem); }
+  h2 { margin: 2.6rem 0 1rem; font-size: 1.1rem; letter-spacing: .04em; text-transform: uppercase; }
+  .meta, .empty, .kind, time { color: var(--mut); }
+  .meta { margin-bottom: 2rem; }
+  .blocks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; }
+  .block { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: .7rem; background: var(--panel); }
+  .block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+  .block-head h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: .95rem; }
+  .kind { flex: 0 0 auto; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; }
+  .block-body { min-width: 0; padding: 1rem; overflow-x: auto; }
+  .block-body svg { display: block; max-width: 100%; height: auto; }
+  .markdown h3 { margin-bottom: .5rem; font-size: 1rem; }
+  .markdown ul { margin: 0 0 .7rem; padding-left: 1.2rem; }
+  .mermaid { min-height: 1rem; white-space: pre-wrap; }
+  .transcript { display: grid; gap: .7rem; margin: 0; padding: 0; list-style: none; }
+  .turn { padding: .7rem .9rem; border: 1px solid var(--line); border-radius: .6rem; background: var(--panel); }
+  .turn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+  .speaker { color: var(--accent); font-weight: 650; }
+  .turn p { margin: .25rem 0 0; overflow-wrap: anywhere; }
+  .participants { display: flex; flex-wrap: wrap; gap: .45rem; padding: 0; list-style: none; }
+  .participants li { padding: .25rem .7rem; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+`;
+
+// Live utterances carry a wall-clock `t_ms` and fixture utterances carry an offset from
+// zero, so the transcript is anchored on its first turn exactly as the live page is.
+function elapsedTime(tMs: number, startMs: number) {
+  if (!Number.isFinite(tMs) || !Number.isFinite(startMs)) return "";
+  const seconds = Math.max(0, Math.round((tMs - startMs) / 1000));
+  return `+${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function exportBlock(block: { kind: string; title: string; source: string }) {
+  const kind = block.kind === "mermaid" ? "diagram" : "note";
+  const body = block.kind === "mermaid"
+    ? `<pre class="mermaid">${escapeHtml(block.source)}</pre>`
+    : `<div class="markdown">${markdownToHtml(block.source)}</div>`;
+  return `<article class="block"><header class="block-head"><h3>${escapeHtml(block.title)}</h3><span class="kind">${kind}</span></header><div class="block-body">${body}</div></article>`;
+}
+
+function exportPage(
+  slug: string,
+  state: Room["state"],
+  utterances: Utterance[],
+  participants: string[],
+  mermaidScript: string,
+) {
+  const exportedAt = new Date().toISOString();
+  const blocks = state.blocks.map(exportBlock).join("\n");
+  const startMs = utterances[0]?.t_ms ?? 0;
+  const transcript = utterances.map((utterance) => `<li class="turn"><div class="turn-head"><span class="speaker">${escapeHtml(utterance.speaker)}</span><time>${escapeHtml(elapsedTime(utterance.t_ms, startMs))}</time></div><p>${escapeHtml(utterance.text)}</p></li>`).join("\n");
+  const people = participants.map((participant) => `<li>${escapeHtml(participant)}</li>`).join("\n");
+  const inlineMermaid = mermaidScript.replace(/<\/script/gi, "<\\/script");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roomy export — ${escapeHtml(slug)}</title>
+<style>${exportStyle}</style>
+</head>
+<body>
+<header>
+  <h1>Roomy canvas</h1>
+  <p class="meta">Room <strong>${escapeHtml(slug)}</strong> · exported <time datetime="${escapeHtml(exportedAt)}">${escapeHtml(exportedAt)}</time></p>
+</header>
+<main>
+  <section aria-labelledby="canvas-heading">
+    <h2 id="canvas-heading">Canvas</h2>
+    ${blocks ? `<div class="blocks">${blocks}</div>` : `<p class="empty">This room is empty: no canvas blocks have been recorded yet.</p>`}
+  </section>
+  <section aria-labelledby="transcript-heading">
+    <h2 id="transcript-heading">Transcript</h2>
+    ${transcript ? `<ol class="transcript">${transcript}</ol>` : `<p class="empty">No utterances were recorded.</p>`}
+  </section>
+  <section aria-labelledby="participants-heading">
+    <h2 id="participants-heading">Participants</h2>
+    ${people ? `<ul class="participants">${people}</ul>` : `<p class="empty">No participants were recorded.</p>`}
+  </section>
+</main>
+<script data-roomy-mermaid="inline">${inlineMermaid}</script>
+<script>
+  // The page has a dark palette; the diagrams follow it, as the live canvas does.
+  // securityLevel stays "strict" — unlike the live page, this file is opened by third parties.
+  var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+  mermaid.run().catch(function () {});
+</script>
+</body>
+</html>`;
+}
 
 export interface ServerOptions {
   /** How long a room with no subscribers survives. Injectable so a test can use milliseconds. */
@@ -47,7 +170,7 @@ async function replay(room: Room, name: string, speed: number) {
 }
 
 function slugFromPath(pathname: string) {
-  const match = /^\/r\/([^/]+)(?:\/(events|utterance|render-error|replay|reset))?$/.exec(pathname);
+  const match = /^\/r\/([^/]+)(?:\/(events|utterance|render-error|replay|reset|export))?$/.exec(pathname);
   if (!match) return;
   let slug: string;
   try {
@@ -110,6 +233,19 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
 
       const route = slugFromPath(url.pathname);
       if (!route) return send(404, { error: "not found" });
+
+      if (req.method === "GET" && route.action === "export") {
+        const entry = rooms.get(route.slug);
+        if (!entry) return send(404, { error: "not found" });
+        // ponytail: the 3.5 MB runtime is re-read and re-inlined on every export; caching it
+        // in memory, or writing the export to disk, is the upgrade path if exports get frequent.
+        const mermaidScript = await readFile(fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", here)), "utf8");
+        const data = entry.room.exportData;
+        const html = exportPage(route.slug, entry.room.state, data.utterances, data.participants, mermaidScript);
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        return res.end(html);
+      }
+
       const entry = getRoom(route.slug);
 
       if (req.method === "GET" && route.action === "page") {

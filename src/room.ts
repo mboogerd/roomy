@@ -108,6 +108,16 @@ export class Room {
   /** The one live segment, if speech is currently being accumulated. */
   live?: Segment;
 
+  /** A copy of the transcript, and everyone who spoke or is still connected, for export. */
+  get exportData(): { utterances: Utterance[]; participants: string[] } {
+    const utterances = this.transcript.map(copyUtterance);
+    const participants = [...new Set([
+      ...utterances.map((utterance) => utterance.speaker),
+      ...this.people(),
+    ])].sort();
+    return { utterances, participants };
+  }
+
   private carry?: Segment;
   private readonly pendingSegments: Segment[] = [];
   private commitLoop?: Promise<void>;
