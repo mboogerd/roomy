@@ -251,8 +251,8 @@ Parallel: T7, T8 (and T9 if C3b added it — the replanner states its claims). T
 
 | Ticket | Nature | Model | Session | Branch | Evaluator | Status |
 |---|---|---|---|---|---|---|
-| T7 | Steering Roomy by direct address | gpt-5.6-luna@max | fresh | ticket/T7 | claude-opus-5 | not-started |
-| T8 | Authenticated external ingest route + demo script | gpt-5.6-luna@max | fresh | ticket/T8 | claude-opus-5 | not-started |
+| T7 | Steering Roomy by direct address | gpt-5.6-luna@max | fresh | ticket/T7 | claude-opus-5 | merged |
+| T8 | Authenticated external ingest route + demo script | gpt-5.6-luna@max | fresh | ticket/T8 | claude-opus-5 | merged |
 
 **Checkpoint C4 — verification.** As C1. T8's evaluator is raised to "hard to undo"
 scrutiny: it touched an authentication path; it must confirm constant-time comparison,
@@ -294,3 +294,12 @@ safety classifier blocks raw `docker run` with the bypass flags. Fallback decisi
   ops in all six; timeline colon failure gone. Restructure deleted a stale block in 1 of 6 final runs.
 - C3b decision (applied by the orchestrator, the rule being numeric): amend-would-have-mattered = 0 on
   all three fixtures (min same-speaker gap 7 s, 13 s, 14 s) -> no T9; recorded in BACKLOG deferred list.
+- Wave 4: T7, T8 merged (evaluators PASS after repair; T8's authentication scrutiny found an unauthenticated
+  GET creating rooms and an unbounded speaker name, both fixed and tested). Gate green, 89 tests.
+- C-final evals on merged main (host, cli backend, one run each, 0 rejected ops in all three):
+  - architecture-debate: calls=37; ops applied=24; rejected=0; blocks mermaid:2; restructure passes=1; wall 1642 s
+  - product-brainstorm: calls=32; ops applied=24; rejected=0; blocks mermaid:4, markdown:1; restructure passes=1; wall 968 s
+  - incident-review: calls=29; ops applied=25; rejected=0; blocks mermaid:3; restructure passes=1; wall 893 s
+- architecture-debate died three times with `claude cli failed (exit 143)`: `src/transport.ts` kills any
+  single call after 90 s. The successful run used a 300 s timeout in a throwaway clone (not committed).
+- Run complete.

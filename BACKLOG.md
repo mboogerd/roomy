@@ -4,6 +4,9 @@ Written to be executed by agents with little supervision. Read CLAUDE.md first.
 The live pipeline is specified in `docs/pipeline.md`. Executable tickets are in `docs/tickets/`;
 the orchestration runbook is `docs/orchestration/PLAN.md`. This file is the human-readable overview.
 
+**Status: the orchestration run is closed.** T1-T8 and T4b are merged on `main`; each
+ticket below carries its outcome. What is left is the deferred list at the bottom.
+
 ## Where this is going
 
 Roomy is not integrated into a meeting tool and does not need to be. Each participant
@@ -45,6 +48,7 @@ Do not change these without a human. Every ticket below assumes they hold.
 ## Wave 1 — parallel
 
 ### T1 · Offline eval harness
+**Done.** `npm run eval -- <fixture>` drives a fixture through `Room` with no server or browser, writes `evals/<fixture>-<timestamp>.md` and prints a one-line summary; every later ticket was judged with it.
 **Files:** new `src/eval.ts`, `package.json` (one script line)
 Run a fixture end to end with no server and no browser: feed utterances through the same
 `Room` logic, dump the final canvas to `evals/<fixture>-<timestamp>.md` (mermaid sources
@@ -61,6 +65,7 @@ fixtures and prints the rejected-op reasons. Include the three reports in your s
 **Do not:** build a scoring model, an LLM judge, or a comparison UI. Reading the output is the eval.
 
 ### T2 · Rooms, participants, and free diarization
+**Done.** `/r/<slug>` rooms with their own canvas, SSE stream and transcript; speaker identity comes from the connection, presence shows joins and departures, and idle rooms are reaped after ten minutes.
 **Files:** `src/server.ts`, `src/room.ts` (subscribe/presence only), `public/index.html`
 This turns a single-tab demo into something a group can use, and it is the foundation for
 every meeting-tool scenario. Read "Where this is going" above first.
@@ -88,6 +93,7 @@ unguessable enough for a PoC — say so in a `ponytail:` comment rather than bui
 ## Wave 2 — parallel, after Wave 1
 
 ### T3 · Replace the tick loop with the journal
+**Done.** The timer loop is gone; `src/room.ts` is the journal from `docs/pipeline.md` (segments, speculate, commit, carry-forward) with `test/journal.test.ts` over a stubbed LLM. Amend was left as a `ponytail:` comment; it would have mattered 0 times on all three fixtures.
 **Files:** `src/room.ts`, `src/prompt.ts` (additive: a speculate prompt), `src/llm.ts`, `src/eval.ts`
 Implement `docs/pipeline.md`. Read it twice. The three invariants are the acceptance
 criteria; everything else in the doc is guidance.
@@ -112,6 +118,7 @@ exact source across three consecutive speculations.
 **Do not:** implement amend, per-speaker live heads, or any delta computation between op sets.
 
 ### T4 · Client visual pass
+**Done.** Content-sized diagram cards in a dense grid at 1400px, single column with the rail below at 900px, a visible recording state and a Web Speech fallback message. A first browser look failed (mermaid error nodes leaking into `document.body`); `T4b` fixed it and re-look showed 0 leaks.
 **Files:** `public/index.html`
 Depends on T2. The canvas renders as a plain vertical stack. Make it read like a shared
 board several people are watching at once: diagrams sized to their content rather than all
@@ -124,11 +131,18 @@ when the browser has no Web Speech API.
 with two participants connected. No new dependencies; mermaid stays the only CDN import.
 **Do not:** add a framework, a build step, drag-and-drop, or hand-editing of blocks.
 
+### T4b · Failed diagrams must not litter the page
+**Done.** Added at checkpoint C2b after a real-browser look at T4: mermaid error nodes were
+leaking into `document.body` (27 after one replay) and failed blocks re-rendered on every
+update. Fixed and covered in `test/client.test.ts`; the re-look showed 0 leaks.
+**Files:** `public/index.html`
+
 ---
 
 ## Wave 3 — parallel, after Wave 2
 
 ### T5 · Prompt hillclimb, and make the restructure pass earn its cost
+**Done.** Diagram choice tuned per fixture and the restructure pass gated on canvas growth; six eval runs (2 per fixture) hit the bar with 0 rejected ops, and the quoted-period `timeline` failure is gone.
 **Files:** `src/prompt.ts`, cadence constants in `src/room.ts`
 Depends on T1 and T3 — tuning the prompt before the loop was rewritten would have meant
 tuning it twice.
@@ -154,6 +168,7 @@ canvas across a restructure on two fixtures; `npm test` passes.
 restructure pipeline.
 
 ### T6 · Export the canvas
+**Done.** `GET /r/<slug>/export` returns one self-contained HTML file with diagrams as inline SVG, the transcript and who was present; the mermaid runtime is inlined so it opens with no network.
 **Files:** `src/server.ts`, `public/index.html`
 `GET /r/<slug>/export` returns a single self-contained HTML file: the canvas as it stands,
 diagrams already rendered to inline SVG, plus the transcript and who was present. It must
@@ -167,6 +182,7 @@ open correctly with no network access. This is how a meeting's output leaves Roo
 ## Wave 4 — after Wave 3
 
 ### T7 · Steering Roomy from the room
+**Done.** A leading "roomy" routes a segment as an instruction on the next commit rather than as conversation to draw; `test/steering.test.ts` shows the canvas responding. Detection stays a dumb prefix check.
 **Files:** `src/room.ts`, `src/prompt.ts`, `public/index.html`
 People will want to aim it: "Roomy, draw that as a sequence diagram", "drop the timeline",
 "focus on the auth part". Detect direct address in the utterance stream and route those
@@ -180,6 +196,7 @@ responding on the next commit.
 **Do not:** build a chat UI, a command grammar, or model-based intent classification.
 
 ### T8 · Harden the ingest path for an external transcript source
+**Done.** `POST /r/<slug>/ingest` behind `ROOMY_INGEST_SECRET` (constant-time compare, 404 when unset, 16 KB body limit, poster-supplied speaker), documented in CLAUDE.md, with `npm run ingest` posting a fixture from outside the process. **Caveat:** one shared secret covers every room and every poster — per-source keys and rotation are the upgrade once more than one bot posts into a deployment.
 **Files:** `src/server.ts`, and a short section in `CLAUDE.md`
 Depends on T2. A meeting bot (Recall.ai, a Teams app, a Slack huddle listener) would post
 transcript into a room exactly the way a browser does. Make that endpoint fit to be called
@@ -203,6 +220,9 @@ the canvas builds from it, and an unauthenticated post is refused.
   same-speaker gap 7 s). Revisit only with live speech, where real pauses may differ.
 - **Restructure prompt can trade content down** (T5 evaluator, incident-review run1: four causes
   became three). The commit prompt has a "never trade a block down" rule; the restructure prompt does not.
+- **Ingest uses one shared secret** (T8). `ROOMY_INGEST_SECRET` covers every room and every
+  poster, and is re-read from the environment per request. Per-source keys, scoping a key to a
+  room, and rotation are the upgrade once more than one bot posts into a deployment.
 - **`test/rooms.test.ts` can call a real LLM** if `ANTHROPIC_API_KEY` is set (`src/server.ts` builds
   rooms with `realLlm`). Needs an injectable factory in server.ts.
 - **Acoustic crosstalk in co-located rooms.** One browser per speaker works when everyone
@@ -219,3 +239,6 @@ the canvas builds from it, and an unauthenticated post is refused.
 - **Freestyle HTML blocks.** The `Block.kind` seam allows it. Deliberately not opened:
   HTML cannot fail a parser, so bad output renders as plausible garbage.
 - **Persistence.** Everything is in memory. Restart loses every room.
+- **CLI transport kills any call after 90 s** (`src/transport.ts:68`), which fails a whole eval or drops a
+  live tick with exit 143. architecture-debate failed 3 of 4 attempts at the C-final check. Make the timeout
+  configurable and raise the default, and let the room retry a killed call once.
