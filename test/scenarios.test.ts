@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runEval } from "../src/eval.ts";
 import { validateOp } from "../src/canvas.ts";
-import { Room, type ServerMsg } from "../src/room.ts";
+import { RESTRUCTURE_EVERY, Room, type ServerMsg } from "../src/room.ts";
 import type { Llm } from "../src/llm.ts";
 import type { Fixture, Utterance } from "../src/transcript.ts";
 import { StubLlm } from "./stub-llm.ts";
@@ -177,6 +177,7 @@ describe("eval harness", () => {
       "fixture=", "calls=", "ops applied=", "ops rejected=", "blocks by kind=",
       "segments committed=", "segments carried forward=", "speculative calls made=",
       "speculative results discarded as stale=", "amend would have mattered=",
+      "restructure passes=", "commits without growth=",
       "wall time=", "tokens input=",
     ])
       expect(summaryLine).toContain(field);
@@ -188,6 +189,38 @@ describe("eval harness", () => {
     expect(report).toContain("## outage-timeline\n\n```mermaid\nflowchart TD\n  Alert --> Pager\n```");
     expect(report).toContain("```markdown"); // the stub's default blocks
     expect(report.trimEnd().endsWith(summaryLine)).toBe(true);
+  });
+
+  it("reports the canvas on both sides of a restructure pass", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = new StubLlm();
+    // Every commit up to the cadence changes the canvas, so the pass is earned. It then
+    // merges "stale" into "keep" the way the restructure prompt asks: one upsert, one delete.
+    for (let i = 0; i < RESTRUCTURE_EVERY; i++) {
+      stub.queueTick([
+        { op: "upsert", id: "keep", kind: "markdown", title: "Keep", source: `### keep ${i}` },
+        ...(i ? [] : [{ op: "upsert", id: "stale", kind: "markdown", title: "Stale", source: "### stale" }]),
+      ]);
+    }
+    stub.queueRestructure([
+      { op: "upsert", id: "keep", kind: "markdown", title: "Keep", source: "### keep, merged" },
+      { op: "delete", id: "stale" },
+    ]);
+
+    const { reportPath } = await runEval("incident-review", { llm: stub, outDir: outDir() });
+    log.mockRestore();
+
+    // This section is the evidence a reader judges the pass by, so it has to be a real diff.
+    const report = readFileSync(reportPath, "utf8");
+    const pass = report.slice(report.indexOf("## Restructure pass 1"));
+    expect(pass).toContain("- preserved ids: keep\n");
+    expect(pass).toContain("- deleted ids: stale\n");
+    expect(pass).toContain("- new ids: (none)\n");
+    const [, before, after] = /### Before\n([^]*)### After\n([^]*)/.exec(pass) ?? [];
+    expect(before).toContain("#### stale - Stale");
+    expect(before).not.toContain("### keep, merged");
+    expect(after).not.toContain("#### stale - Stale");
+    expect(after).toContain("### keep, merged");
   });
 
   it("fails fast with a clear message when the LLM errors", async () => {
