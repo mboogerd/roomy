@@ -227,8 +227,8 @@ disjoint ways. Expect a clean merge; if not, T5 merges first.
 
 | Ticket | Nature | Model | Session | Branch | Evaluator | Status |
 |---|---|---|---|---|---|---|
-| T5 | Prompt hillclimb on diagram choice; restructure earns its cost | gpt-5.6-luna@max | fresh | ticket/T5 | claude-opus-5 | not-started |
-| T6 | Self-contained HTML export | gpt-5.6-luna@max | fresh | ticket/T6 | claude-opus-5 | not-started |
+| T5 | Prompt hillclimb on diagram choice; restructure earns its cost | gpt-5.6-luna@max | fresh | ticket/T5 | claude-opus-5 | merged |
+| T6 | Self-contained HTML export | gpt-5.6-luna@max | fresh | ticket/T6 | claude-opus-5 | merged |
 
 **Checkpoint C3 — verification.** As C1. T5 is judged on its attached eval reports
 (two per fixture) against the bar in the ticket; the evaluator may run one more eval per
@@ -288,3 +288,9 @@ safety classifier blocks raw `docker run` with the bypass flags. Fallback decisi
 - Fallback decision (Wave 3): T5 needs a live LLM to hill-climb and no container can reach one
   (credentials are scrubbed). T5 runs as an in-process opus agent on the host in its own clone
   (never a worktree); its evaluator still runs in Docker and reads the attached eval reports.
+- Wave 3: T6 merged first (evaluator repaired epoch-anchored export timestamps and dark-mode diagrams),
+  then T5 (host agent per the fallback above; evaluator in Docker read six attached eval reports, PASS
+  after repair). Gate green, 71 tests, clean merge in src/room.ts. T5 evals: 2/2 per fixture, 0 rejected
+  ops in all six; timeline colon failure gone. Restructure deleted a stale block in 1 of 6 final runs.
+- C3b decision (applied by the orchestrator, the rule being numeric): amend-would-have-mattered = 0 on
+  all three fixtures (min same-speaker gap 7 s, 13 s, 14 s) -> no T9; recorded in BACKLOG deferred list.

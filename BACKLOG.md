@@ -199,7 +199,12 @@ the canvas builds from it, and an unauthenticated post is refused.
 ## Deferred, needs a human decision
 
 - **Amend** (`docs/pipeline.md`). Reopen the last committed segment when its speaker resumes
-  within ~2 s. Decide after T3 reports how often it would have mattered.
+  within ~2 s. **Decided at C3b: not now.** T3 measured 0 occasions on all three fixtures (smallest
+  same-speaker gap 7 s). Revisit only with live speech, where real pauses may differ.
+- **Restructure prompt can trade content down** (T5 evaluator, incident-review run1: four causes
+  became three). The commit prompt has a "never trade a block down" rule; the restructure prompt does not.
+- **`test/rooms.test.ts` can call a real LLM** if `ANTHROPIC_API_KEY` is set (`src/server.ts` builds
+  rooms with `realLlm`). Needs an injectable factory in server.ts.
 - **Acoustic crosstalk in co-located rooms.** One browser per speaker works when everyone
   is remote with headsets. Laptops around a table each hear the whole room, so the same
   sentence arrives three times under three names. Likely fix is a "one mic in this room"
