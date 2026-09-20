@@ -54,16 +54,15 @@ export async function runEval(fixtureName: string, options: EvalOptions = {}): P
   const started = Date.now();
 
   try {
-    // Calling maybeTick after each utterance preserves Room's normal thresholds without
-    // waiting through fixture timestamps or involving the server.
-    for (const utterance of fixture.utterances) {
-      room.say(utterance);
-      await room.maybeTick();
-      if (transportError) throw new Error(`LLM transport error: ${transportError}`);
-    }
+    // Feed the transcript through the same single-ingest path as the server. Speaker
+    // changes close segments synchronously; the final maybeTick flushes the last one
+    // without sleeping through fixture timestamps.
+    for (const utterance of fixture.utterances) room.say(utterance);
     await room.maybeTick();
     if (transportError) throw new Error(`LLM transport error: ${transportError}`);
   } finally {
+    // stop() clears the pause timer say() armed, so the harness leaves nothing pending.
+    room.stop();
     off();
   }
 
@@ -77,6 +76,11 @@ export async function runEval(fixtureName: string, options: EvalOptions = {}): P
     `ops applied=${room.metrics.opsApplied}`,
     `ops rejected=${room.metrics.rejectedReasons.length} (${formatCounts(rejectedByReason)})`,
     `blocks by kind=${formatCounts(blocksByKind)}`,
+    `segments committed=${room.metrics.segmentsCommitted}`,
+    `segments carried forward=${room.metrics.segmentsCarriedForward}`,
+    `speculative calls made=${room.metrics.speculativeCallsMade}`,
+    `speculative results discarded as stale=${room.metrics.speculativeResultsDiscarded}`,
+    `amend would have mattered=${room.metrics.amendWouldHaveMattered}`,
     `wall time=${wallTime}ms`,
     `tokens input=${usage.input - before.input}, output=${usage.output - before.output}, cacheRead=${usage.cacheRead - before.cacheRead}`,
   ].join("; ");

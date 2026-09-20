@@ -16,7 +16,7 @@ const fixtureFiles = readdirSync("src/fixtures")
 const readFixture = (file: string): Fixture =>
   JSON.parse(readFileSync(`src/fixtures/${file}`, "utf8")) as Fixture;
 
-const longUtterance = (text = "A deterministic scenario utterance with enough detail to cross the room tick threshold. It intentionally contains more than one hundred and twenty characters so the normal Room threshold starts a tick."): Utterance => ({
+const longUtterance = (text = "A deterministic scenario utterance with enough detail to form a complete segment. It intentionally contains more than forty characters so it commits cleanly in the journal tests."): Utterance => ({
   t_ms: 0,
   speaker: "Test",
   text,
@@ -46,8 +46,8 @@ describe("Room scenarios", () => {
     const messages: ServerMsg[] = [];
     room.subscribe((message) => messages.push(message));
 
-    // One utterance at a time, exactly as eval drives it: MIN_NEW_CHARS decides when a
-    // tick fires, so the summary cadence runs too instead of a single whole-transcript batch.
+    // Flush after each utterance to keep the deterministic scenario surface simple.
+    // The journal itself still segments server speech by pause and speaker change.
     for (const utterance of fixture.utterances) {
       room.say(utterance);
       await room.maybeTick();
@@ -73,16 +73,14 @@ describe("Room scenarios", () => {
     for (let i = 1; i < revisions.length; i++) expect(revisions[i]).toBeGreaterThan(revisions[i - 1]);
   });
 
-  it("constructs with no argument and stays offline below the tick threshold", async () => {
-    const room = new Room(); // defaults to the real LLM; short input means it is never called
+  it("constructs with no argument and keeps the real LLM out until speech arrives", async () => {
+    const room = new Room();
     const messages: ServerMsg[] = [];
     room.subscribe((message) => messages.push(message));
-
-    room.say({ t_ms: 0, speaker: "Test", text: "too short to tick" });
-    await room.maybeTick();
-
+    room.start();
+    room.stop();
     expect(room.state).toEqual({ blocks: [], rev: 0 });
-    expect(messages.filter((message) => message.type === "utterance")).toHaveLength(1);
+    expect(messages.filter((message) => message.type === "utterance")).toHaveLength(0);
   });
 
   it("applies good ops and counts malformed ops from the same batch", async () => {
@@ -145,6 +143,7 @@ describe("Room scenarios", () => {
       restructure: async () => [],
       summarize: async () => "",
       repair: async () => [],
+      speculate: async () => [],
     };
     const room = new Room(llm);
     room.say(longUtterance());
@@ -174,7 +173,12 @@ describe("eval harness", () => {
     expect(log).toHaveBeenCalledWith(summaryLine);
     log.mockRestore();
 
-    for (const field of ["fixture=", "calls=", "ops applied=", "ops rejected=", "blocks by kind=", "wall time=", "tokens input="])
+    for (const field of [
+      "fixture=", "calls=", "ops applied=", "ops rejected=", "blocks by kind=",
+      "segments committed=", "segments carried forward=", "speculative calls made=",
+      "speculative results discarded as stale=", "amend would have mattered=",
+      "wall time=", "tokens input=",
+    ])
       expect(summaryLine).toContain(field);
     expect(summaryLine).toContain(`calls=${stub.stats.calls}`);
     expect(summaryLine).toContain(`tokens input=${stub.stats.usage.input}`);

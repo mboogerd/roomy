@@ -1,13 +1,30 @@
-import { applyOps, emptyCanvas, type CanvasState } from "./canvas.ts";
+import { applyOps, emptyCanvas, type CanvasState, type Op } from "./canvas.ts";
 import type { Utterance } from "./transcript.ts";
 import { realLlm, type Llm } from "./llm.ts";
 
-export const TICK_MS = 8000;         // how often we consider updating the canvas
-export const MIN_NEW_CHARS = 120;    // below this, a tick is almost certainly not worth a call
-export const SUMMARY_EVERY = 4;      // ticks between rolling-summary refreshes
-export const RESTRUCTURE_EVERY = 15; // ticks between full-canvas rethinks (~2 min)
+export const SEGMENT_PAUSE_MS = 1500;
+export const SEGMENT_MIN_CHARS = 40;
+export const SEGMENT_MAX_CHARS = 400;
+export const SUMMARY_EVERY = 4;      // commits between rolling-summary refreshes
+export const RESTRUCTURE_EVERY = 15; // commits between full-canvas rethinks
 
 type Listener = (msg: ServerMsg) => void;
+
+export interface Segment {
+  id: number;
+  speaker: string;
+  text: string;
+  utterances: Utterance[];
+  openedAt: number;
+  closedAt?: number;
+  version: number;
+}
+
+export interface Entry {
+  segment: Segment;
+  ops: unknown[];
+  snapshot: CanvasState;
+}
 
 // What eval.ts reports on; the server ignores it.
 // ponytail: rejectedReasons grows for the life of the room. Fine for a fixture run and
@@ -15,28 +32,97 @@ type Listener = (msg: ServerMsg) => void;
 export interface RoomMetrics {
   opsApplied: number;
   rejectedReasons: string[];
+  segmentsCommitted: number;
+  segmentsCarriedForward: number;
+  speculativeCallsMade: number;
+  speculativeResultsDiscarded: number;
+  amendWouldHaveMattered: number;
 }
 
 export type ServerMsg =
   // Full state on every change, plus which ids moved, so the client needs no op applier.
-  | { type: "state"; state: CanvasState; changed: string[] }
+  | { type: "state"; state: CanvasState; changed: string[]; speculative?: string[] }
   | { type: "utterance"; utterance: Utterance }
   | { type: "status"; busy: boolean; note?: string }
   | { type: "presence"; people: string[] };
 
+interface SpeculationResult {
+  retry: boolean;
+}
+
+interface SpeculationRequest {
+  epoch: number;
+  stableEpoch: number;
+  segmentId: number;
+  version: number;
+  text: string;
+}
+
+interface LastCommit {
+  speaker: string;
+  closedAt: number;
+  counted: boolean;
+}
+
+const copyState = (state: CanvasState): CanvasState => ({
+  rev: state.rev,
+  blocks: state.blocks.map((block) => ({ ...block })),
+});
+
+const copyUtterance = (utterance: Utterance): Utterance => ({ ...utterance });
+
+const utteranceText = (utterances: Utterance[]) => utterances.map((u) => u.text).join(" ").trim();
+
+const changedIds = (ops: Op[]) => ops.flatMap((op) => {
+  if (op.op === "reorder") return op.ids;
+  return [op.id];
+});
+
+const speculativeIds = (ops: Op[]) => [...new Set(changedIds(ops))];
+
+/** Raw ops are unvalidated here, so read the id defensively. */
+const targets = (op: unknown, id: string) =>
+  !!op && typeof op === "object" && (op as { id?: unknown }).id === id;
+
 /** One conversation. In-memory, single instance. Persistence is not a PoC concern. */
 export class Room {
+  /** The canvas clients see: stable plus the current speculative overlay. */
   state: CanvasState = emptyCanvas();
+  /** The journal head. It is never changed by a speculative result. */
+  stable: CanvasState = emptyCanvas();
+  /** Committed journal entries, oldest first. */
+  entries: Entry[] = [];
+  /** Full ops for the current live segment, replaced on every result. */
+  liveOps: unknown[] = [];
   summary = "";
-  readonly metrics: RoomMetrics = { opsApplied: 0, rejectedReasons: [] };
-  private pending: Utterance[] = [];      // said since the last tick
-  private sinceSummary: Utterance[] = []; // said since the last summary refresh
-  private recent: Utterance[] = [];       // trailing context for the tick window
-  private inFlight?: Promise<void>;
-  private ticks = 0;
+  readonly metrics: RoomMetrics = {
+    opsApplied: 0,
+    rejectedReasons: [],
+    segmentsCommitted: 0,
+    segmentsCarriedForward: 0,
+    speculativeCallsMade: 0,
+    speculativeResultsDiscarded: 0,
+    amendWouldHaveMattered: 0,
+  };
+
+  /** The one live segment, if speech is currently being accumulated. */
+  live?: Segment;
+
+  private carry?: Segment;
+  private readonly pendingSegments: Segment[] = [];
+  private commitLoop?: Promise<void>;
+  private speculation?: SpeculationRequest & { promise: Promise<SpeculationResult> };
+  private readonly commitMemo = new Map<number, unknown[]>();
+  private summaryWindow: Utterance[] = [];
+  private transcript: Utterance[] = [];
+  private lastCommit?: LastCommit;
+  private pauseTimer?: ReturnType<typeof setTimeout>;
+  private nextSegmentId = 1;
+  private stableEpoch = 0;
+  private roomEpoch = 0;
+  private busy = 0;
   private listeners = new Set<Listener>();
   private names = new Map<Listener, string>();
-  private timer?: NodeJS.Timeout;
   private readonly llm: Llm;
 
   constructor(llm: Llm = realLlm) {
@@ -47,7 +133,8 @@ export class Room {
     const before = this.people();
     this.listeners.add(fn);
     this.names.set(fn, name);
-    fn({ type: "state", state: this.state, changed: [] });
+    const speculative = this.liveOps.length ? speculativeIds(this.validOverlayOps()) : undefined;
+    fn({ type: "state", state: this.state, changed: [], ...(speculative?.length ? { speculative } : {}) });
     if (!samePeople(before, this.people())) this.emit({ type: "presence", people: this.people() });
     return () => {
       if (!this.listeners.has(fn)) return;
@@ -67,91 +154,346 @@ export class Room {
   }
 
   say(u: Utterance) {
-    this.pending.push(u);
-    this.sinceSummary.push(u);
-    this.emit({ type: "utterance", utterance: u });
+    const utterance = copyUtterance(u);
+    this.transcript.push(utterance);
+    this.considerAmend(utterance);
+    this.emit({ type: "utterance", utterance });
+
+    if (!this.live) {
+      if (this.carry && this.carry.speaker === utterance.speaker) {
+        const carried = this.carry;
+        this.carry = undefined;
+        this.live = this.makeSegment(utterance, carried);
+      } else {
+        if (this.carry) {
+          const carried = this.carry;
+          this.carry = undefined;
+          this.enqueueSegment(carried);
+        }
+        this.live = this.makeSegment(utterance);
+      }
+    } else if (this.live.speaker !== utterance.speaker) {
+      // ponytail: one live segment per room is intentional; per-speaker heads are the
+      // upgrade if overlapping remote speech becomes common.
+      this.closeLive(true);
+      this.live = this.makeSegment(utterance);
+    } else {
+      this.appendToLive(utterance);
+    }
+
+    this.resetPauseTimer();
+    if (this.live && this.live.text.length > SEGMENT_MAX_CHARS) this.closeLive(true);
+    else this.startSpeculation();
   }
 
+  /** Timers are owned by say(); start remains for the server lifecycle contract. */
   start() {
-    this.timer ??= setInterval(() => void this.maybeTick(), TICK_MS);
+    // Segmentation is event-driven. There is no polling loop to start.
   }
 
   stop() {
-    clearInterval(this.timer);
-    this.timer = undefined;
+    this.clearPauseTimer();
   }
 
   reset() {
-    this.state = emptyCanvas();
+    this.clearPauseTimer();
+    this.roomEpoch++;
+    this.live = undefined;
+    this.carry = undefined;
+    this.pendingSegments.length = 0;
+    this.liveOps = [];
+    this.stable = emptyCanvas();
+    this.state = this.stable;
+    this.entries = [];
     this.summary = "";
+    this.summaryWindow = [];
+    this.transcript = [];
+    this.lastCommit = undefined;
+    this.commitMemo.clear();
+    this.nextSegmentId = 1;
+    this.stableEpoch = 0;
     this.metrics.opsApplied = 0;
     this.metrics.rejectedReasons = [];
-    this.pending = [];
-    this.sinceSummary = [];
-    this.recent = [];
-    this.ticks = 0;
+    this.metrics.segmentsCommitted = 0;
+    this.metrics.segmentsCarriedForward = 0;
+    this.metrics.speculativeCallsMade = 0;
+    this.metrics.speculativeResultsDiscarded = 0;
+    this.metrics.amendWouldHaveMattered = 0;
     this.emit({ type: "state", state: this.state, changed: [] });
   }
 
   /**
-   * Runs one tick and resolves once the LLM work it waited on is done. Never starts a
-   * second tick concurrently — a backlog of stale windows helps nobody — so a call made
-   * while one is in flight just awaits that one.
+   * Closes the live segment now and waits for queued commit work. The method remains
+   * awaitable for replay and the eval harness; speculation is deliberately independent
+   * and may finish later, where a result for a closed segment is discarded.
    */
   async maybeTick() {
-    if (this.inFlight) {
-      await this.inFlight;
-      return;
+    this.closeLive(true);
+    if (this.carry) {
+      const carried = this.carry;
+      this.carry = undefined;
+      this.enqueueSegment(carried);
     }
-    const newChars = this.pending.reduce((n, u) => n + u.text.length, 0);
-    if (newChars < MIN_NEW_CHARS) return;
-
-    const window = [...this.recent.slice(-4), ...this.pending];
-    this.recent = [...this.recent, ...this.pending].slice(-12);
-    const consumed = this.pending;
-    this.pending = [];
-    this.ticks++;
-
-    const work = this.runTick(window, consumed);
-    this.inFlight = work;
-    try {
-      await work;
-    } finally {
-      if (this.inFlight === work) this.inFlight = undefined;
-    }
+    await this.drainCommits();
   }
 
-  private async runTick(window: Utterance[], consumed: Utterance[]) {
-    this.emit({ type: "status", busy: true });
-    try {
-      const restructuring = this.ticks % RESTRUCTURE_EVERY === 0;
-      const ops = restructuring
-        ? await this.llm.restructure(this.state, this.summary)
-        : await this.llm.tick(this.state, window, this.summary);
-      this.commit(ops);
+  private makeSegment(first: Utterance, carried?: Segment): Segment {
+    const utterances = carried
+      ? [...carried.utterances.map(copyUtterance), copyUtterance(first)]
+      : [copyUtterance(first)];
+    return {
+      id: this.nextSegmentId++,
+      speaker: first.speaker,
+      text: utteranceText(utterances),
+      utterances,
+      openedAt: carried?.openedAt ?? first.t_ms,
+      version: 1,
+    };
+  }
 
-      if (this.ticks % SUMMARY_EVERY === 0 && this.sinceSummary.length) {
-        this.summary = await this.llm.summarize(this.summary, this.sinceSummary);
-        this.sinceSummary = [];
+  private appendToLive(utterance: Utterance) {
+    if (!this.live) return;
+    this.live.utterances.push(copyUtterance(utterance));
+    this.live.text = utteranceText(this.live.utterances);
+    this.live.version++;
+  }
+
+  private resetPauseTimer() {
+    this.clearPauseTimer();
+    if (!this.live) return;
+    const segmentId = this.live.id;
+    this.pauseTimer = setTimeout(() => {
+      if (this.live?.id !== segmentId) return;
+      this.closeLive(false);
+    }, SEGMENT_PAUSE_MS);
+  }
+
+  private clearPauseTimer() {
+    if (this.pauseTimer) clearTimeout(this.pauseTimer);
+    this.pauseTimer = undefined;
+  }
+
+  private closeLive(forceCommit: boolean) {
+    this.clearPauseTimer();
+    const segment = this.live;
+    if (!segment) return;
+    this.live = undefined;
+    segment.closedAt = segment.utterances.at(-1)?.t_ms ?? segment.openedAt;
+    const hadOverlay = this.liveOps.length > 0;
+    this.liveOps = [];
+    if (hadOverlay) this.publishShown();
+
+    if (!forceCommit && segment.text.length < SEGMENT_MIN_CHARS) {
+      this.carry = segment;
+      this.metrics.segmentsCarriedForward++;
+      return;
+    }
+    this.enqueueSegment(segment);
+  }
+
+  private enqueueSegment(segment: Segment) {
+    this.pendingSegments.push(segment);
+    void this.drainCommits();
+  }
+
+  private drainCommits(): Promise<void> {
+    if (this.commitLoop) return this.commitLoop;
+    const epoch = this.roomEpoch;
+    const work = (async () => {
+      while (epoch === this.roomEpoch && this.pendingSegments.length) {
+        const segment = this.pendingSegments.shift();
+        if (!segment) break;
+        const committed = await this.commitSegment(segment, epoch);
+        if (!committed) {
+          this.pendingSegments.unshift(segment);
+          break;
+        }
       }
-    } catch (err) {
-      // Put the window back so a transient API failure does not lose the conversation.
-      this.pending = [...consumed, ...this.pending];
-      this.emit({ type: "status", busy: false, note: String(err) });
-      return;
-    }
-    this.emit({ type: "status", busy: false });
+    })();
+    this.commitLoop = work;
+    void work.then(() => {
+      if (this.commitLoop !== work) return;
+      this.commitLoop = undefined;
+      if (epoch === this.roomEpoch) this.startSpeculation();
+    }, () => {
+      if (this.commitLoop === work) this.commitLoop = undefined;
+    });
+    return work;
   }
 
-  commit(ops: unknown[]) {
-    const result = applyOps(this.state, ops);
-    this.state = result.state;
+  private async commitSegment(segment: Segment, epoch: number): Promise<boolean> {
+    if (epoch !== this.roomEpoch) return true;
+    let ops = this.commitMemo.get(segment.id);
+    try {
+      if (!ops) {
+        const base = copyState(this.stable);
+        const previous = this.entries.slice(-2).flatMap((entry) => entry.segment.utterances);
+        const window = [...previous, ...segment.utterances].map(copyUtterance);
+        const commitNumber = this.metrics.segmentsCommitted + 1;
+        this.beginWork();
+        try {
+          ops = commitNumber % RESTRUCTURE_EVERY === 0
+            ? await this.llm.restructure(base, this.summary)
+            : await this.llm.tick(base, window, this.summary);
+        } finally {
+          this.endWork();
+        }
+        this.commitMemo.set(segment.id, ops.slice());
+      }
+
+      if (epoch !== this.roomEpoch) return true;
+      this.applyCommitted(segment, ops);
+      this.metrics.segmentsCommitted++;
+      this.summaryWindow.push(...segment.utterances.map(copyUtterance));
+      this.recordLastCommit(segment);
+
+      if (this.metrics.segmentsCommitted % SUMMARY_EVERY === 0 && this.summaryWindow.length) {
+        await this.refreshSummary(epoch);
+      }
+      return true;
+    } catch (error) {
+      this.reportError(error);
+      return false;
+    }
+  }
+
+  private applyCommitted(segment: Segment, ops: unknown[]) {
+    const result = applyOps(this.stable, ops);
+    this.stable = result.state;
+    this.stableEpoch++;
+    this.entries.push({
+      segment: { ...segment, utterances: segment.utterances.map(copyUtterance) },
+      ops: ops.slice(),
+      snapshot: copyState(this.stable),
+    });
     this.metrics.opsApplied += result.applied.length;
     this.metrics.rejectedReasons.push(...result.rejected);
     if (result.rejected.length) console.warn("rejected ops:", result.rejected);
-    if (result.applied.length) {
-      const changed = result.applied.flatMap((o) => (o.op === "reorder" ? o.ids : [o.id]));
-      this.emit({ type: "state", state: this.state, changed });
+
+    // A stable-head change invalidates any overlay based on the old head. A live
+    // segment, if there is one, will be speculated again after the commit queue drains.
+    this.liveOps = [];
+    this.publishShown(changedIds(result.applied));
+  }
+
+  private async refreshSummary(epoch: number) {
+    const window = this.summaryWindow.map(copyUtterance);
+    this.beginWork();
+    try {
+      const next = await this.llm.summarize(this.summary, window);
+      if (epoch === this.roomEpoch) {
+        this.summary = next;
+        this.summaryWindow = [];
+      }
+    } catch (error) {
+      this.reportError(error);
+    } finally {
+      this.endWork();
+    }
+  }
+
+  private startSpeculation() {
+    const segment = this.live;
+    if (!segment || this.pendingSegments.length || this.commitLoop || this.speculation) return;
+
+    const request: SpeculationRequest = {
+      epoch: this.roomEpoch,
+      stableEpoch: this.stableEpoch,
+      segmentId: segment.id,
+      version: segment.version,
+      text: segment.text,
+    };
+    this.metrics.speculativeCallsMade++;
+    const promise = this.runSpeculation(request);
+    this.speculation = { ...request, promise };
+    void promise.then((result) => {
+      if (this.speculation?.promise !== promise) return;
+      this.speculation = undefined;
+      if (result.retry) this.startSpeculation();
+    }, () => {
+      if (this.speculation?.promise === promise) this.speculation = undefined;
+    });
+  }
+
+  private async runSpeculation(request: SpeculationRequest): Promise<SpeculationResult> {
+    try {
+      const ops = await this.llm.speculate(copyState(this.stable), request.text);
+      const current = this.isCurrent(request);
+      if (!current) {
+        this.metrics.speculativeResultsDiscarded++;
+        return { retry: request.epoch === this.roomEpoch && !!this.live };
+      }
+
+      // Replace the overlay wholesale. Never derive a delta from its previous value.
+      this.liveOps = Array.isArray(ops) ? ops.slice() : [];
+      this.publishShown();
+      const grew = !!this.live && (this.live.id !== request.segmentId || this.live.version !== request.version);
+      return { retry: grew };
+    } catch (error) {
+      this.reportError(error);
+      return { retry: this.isCurrent(request) && !!this.live && this.live.version > request.version };
+    }
+  }
+
+  private isCurrent(request: SpeculationRequest) {
+    return request.epoch === this.roomEpoch
+      && request.stableEpoch === this.stableEpoch
+      && this.live?.id === request.segmentId;
+  }
+
+  private validOverlayOps(): Op[] {
+    return applyOps(this.stable, this.liveOps).applied;
+  }
+
+  /** `committed` carries the ids a commit just moved; the overlay contributes the rest. */
+  private publishShown(committed: string[] = []) {
+    const result = applyOps(this.stable, this.liveOps);
+    const shown = result.state;
+    // Overlay recomputation is not a journal commit. Keep the client-facing revision
+    // monotonic even when a provisional overlay is cleared before its commit returns.
+    this.state = shown.rev >= this.state.rev ? shown : { ...shown, rev: this.state.rev };
+    const speculative = this.liveOps.length ? speculativeIds(result.applied) : [];
+    const message: Extract<ServerMsg, { type: "state" }> = {
+      type: "state",
+      state: this.state,
+      changed: [...new Set([...committed, ...changedIds(result.applied)])],
+      ...(speculative.length ? { speculative } : {}),
+    };
+    this.emit(message);
+  }
+
+  private beginWork() {
+    if (this.busy++ === 0) this.emit({ type: "status", busy: true });
+  }
+
+  private endWork() {
+    this.busy = Math.max(0, this.busy - 1);
+    if (this.busy === 0) this.emit({ type: "status", busy: false });
+  }
+
+  private reportError(error: unknown) {
+    this.emit({ type: "status", busy: this.busy > 0, note: String(error) });
+  }
+
+  private recordLastCommit(segment: Segment) {
+    const closedAt = segment.closedAt ?? segment.utterances.at(-1)?.t_ms ?? segment.openedAt;
+    this.lastCommit = { speaker: segment.speaker, closedAt, counted: false };
+    for (const utterance of this.transcript) {
+      this.considerAmend(utterance);
+      if (this.lastCommit.counted) break;
+    }
+  }
+
+  // ponytail: amend goes here. When this fires, the upgrade is to reopen the last
+  // committed entry — drop stable[head] back one snapshot and make its segment live
+  // again with the new text. Deliberately not built; this counter is what decides it.
+  private considerAmend(utterance: Utterance) {
+    const last = this.lastCommit;
+    if (!last || last.counted || utterance.speaker !== last.speaker) return;
+    const delta = utterance.t_ms - last.closedAt;
+    if (delta > 0 && delta <= 2000) {
+      last.counted = true;
+      this.metrics.amendWouldHaveMattered++;
     }
   }
 
@@ -159,6 +501,13 @@ export class Room {
   async renderFailed(id: string, error: string) {
     const block = this.state.blocks.find((b) => b.id === id);
     if (!block) return;
+    if (!this.stable.blocks.some((b) => b.id === id)) {
+      // The block exists only in the overlay. Repairing it would write a speculative
+      // block into the journal, so drop it instead; the next speculation supersedes it.
+      this.liveOps = this.liveOps.filter((op) => !targets(op, id));
+      this.publishShown();
+      return;
+    }
     try {
       const ops = await this.llm.repair(id, block.source, error);
       if (ops.length) this.commit(ops);
@@ -166,6 +515,18 @@ export class Room {
     } catch {
       this.commit([{ op: "delete", id }]);
     }
+  }
+
+  /** Applies a repair or other out-of-band correction to the stable head. */
+  commit(ops: unknown[]) {
+    const result = applyOps(this.stable, ops);
+    this.stable = result.state;
+    this.stableEpoch++;
+    this.liveOps = [];
+    this.metrics.opsApplied += result.applied.length;
+    this.metrics.rejectedReasons.push(...result.rejected);
+    if (result.rejected.length) console.warn("rejected ops:", result.rejected);
+    this.publishShown();
   }
 }
 
