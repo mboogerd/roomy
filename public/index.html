@@ -242,6 +242,7 @@
     <select id="speed" aria-label="Replay speed"><option>5</option><option selected>10</option><option>30</option></select>
     <button id="play" type="button">Replay</button>
     <button id="reset" type="button">Reset</button>
+    <button id="export" type="button">Export</button>
   </div>
   <div id="status" role="status" aria-live="polite">idle</div>
 </aside>
@@ -446,6 +447,7 @@ $("play").onclick = () => {
   post("replay", { fixture: $("fixture").value, speed: +$("speed").value });
 };
 $("reset").onclick = () => { clearLog(); rendered.clear(); failed.clear(); post("reset"); };
+$("export").onclick = () => window.open(`${roomPath}/export`, "_blank", "noopener");
 
 function showMicMessage(message) {
   const note = $("mic-note");

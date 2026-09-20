@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.68.0"
+    "@anthropic-ai/sdk": "^0.68.0",
+    "mermaid": "^11.17.2"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
