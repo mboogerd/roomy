@@ -69,6 +69,7 @@ function stubElement() {
     title: "",
     hidden: false,
     offsetWidth: 0,
+    onclick: undefined as undefined | (() => void),
     attributes: new Map<string, string>(),
     children: [] as any[],
     classList: {
@@ -152,7 +153,7 @@ describe("the client's mic button", () => {
     expect(nodes["mic-note"].hidden).toBe(false);
     expect(nodes["mic-note"].textContent).toMatch(/unavailable in this browser/);
 
-    nodes.mic.onclick();
+    nodes.mic.onclick!();
     expect(nodes["mic-note"].hidden).toBe(false);
     expect(nodes.mic.classList.contains("recording")).toBe(false);
   });
@@ -171,12 +172,12 @@ describe("the client's mic button", () => {
     const nodes = micScope(FakeRecognition);
     expect(nodes["mic-note"].hidden).toBe(true);
 
-    nodes.mic.onclick();
+    nodes.mic.onclick!();
     expect(nodes.mic.classList.contains("recording")).toBe(true);
     expect(nodes.mic.attributes.get("aria-pressed")).toBe("true");
     expect(nodes["mic-label"].textContent).toMatch(/stop/i);
 
-    nodes.mic.onclick();
+    nodes.mic.onclick!();
     expect(stopped).toBe(1);
     expect(nodes.mic.classList.contains("recording")).toBe(false);
     expect(nodes.mic.attributes.get("aria-pressed")).toBe("false");
