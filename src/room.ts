@@ -80,6 +80,10 @@ const changedIds = (ops: Op[]) => ops.flatMap((op) => {
 
 const speculativeIds = (ops: Op[]) => [...new Set(changedIds(ops))];
 
+/** Raw ops are unvalidated here, so read the id defensively. */
+const targets = (op: unknown, id: string) =>
+  !!op && typeof op === "object" && (op as { id?: unknown }).id === id;
+
 /** One conversation. In-memory, single instance. Persistence is not a PoC concern. */
 export class Room {
   /** The canvas clients see: stable plus the current speculative overlay. */
@@ -369,7 +373,7 @@ export class Room {
     // A stable-head change invalidates any overlay based on the old head. A live
     // segment, if there is one, will be speculated again after the commit queue drains.
     this.liveOps = [];
-    this.publishShown();
+    this.publishShown(changedIds(result.applied));
   }
 
   private async refreshSummary(epoch: number) {
@@ -441,7 +445,8 @@ export class Room {
     return applyOps(this.stable, this.liveOps).applied;
   }
 
-  private publishShown() {
+  /** `committed` carries the ids a commit just moved; the overlay contributes the rest. */
+  private publishShown(committed: string[] = []) {
     const result = applyOps(this.stable, this.liveOps);
     const shown = result.state;
     // Overlay recomputation is not a journal commit. Keep the client-facing revision
@@ -451,7 +456,7 @@ export class Room {
     const message: Extract<ServerMsg, { type: "state" }> = {
       type: "state",
       state: this.state,
-      changed: changedIds(result.applied),
+      changed: [...new Set([...committed, ...changedIds(result.applied)])],
       ...(speculative.length ? { speculative } : {}),
     };
     this.emit(message);
@@ -479,6 +484,9 @@ export class Room {
     }
   }
 
+  // ponytail: amend goes here. When this fires, the upgrade is to reopen the last
+  // committed entry — drop stable[head] back one snapshot and make its segment live
+  // again with the new text. Deliberately not built; this counter is what decides it.
   private considerAmend(utterance: Utterance) {
     const last = this.lastCommit;
     if (!last || last.counted || utterance.speaker !== last.speaker) return;
@@ -493,6 +501,13 @@ export class Room {
   async renderFailed(id: string, error: string) {
     const block = this.state.blocks.find((b) => b.id === id);
     if (!block) return;
+    if (!this.stable.blocks.some((b) => b.id === id)) {
+      // The block exists only in the overlay. Repairing it would write a speculative
+      // block into the journal, so drop it instead; the next speculation supersedes it.
+      this.liveOps = this.liveOps.filter((op) => !targets(op, id));
+      this.publishShown();
+      return;
+    }
     try {
       const ops = await this.llm.repair(id, block.source, error);
       if (ops.length) this.commit(ops);

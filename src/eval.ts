@@ -61,6 +61,8 @@ export async function runEval(fixtureName: string, options: EvalOptions = {}): P
     await room.maybeTick();
     if (transportError) throw new Error(`LLM transport error: ${transportError}`);
   } finally {
+    // stop() clears the pause timer say() armed, so the harness leaves nothing pending.
+    room.stop();
     off();
   }
 
