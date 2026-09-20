@@ -63,6 +63,7 @@ function stubElement() {
   const classes = new Set<string>();
   const parts = new Map<string, any>();
   return {
+    id: "",
     className: "",
     textContent: "",
     innerHTML: "",
@@ -70,6 +71,7 @@ function stubElement() {
     hidden: false,
     offsetWidth: 0,
     onclick: undefined as undefined | (() => void),
+    parentNode: undefined as any,
     attributes: new Map<string, string>(),
     children: [] as any[],
     classList: {
@@ -83,7 +85,14 @@ function stubElement() {
       if (!parts.has(sel)) parts.set(sel, stubElement());
       return parts.get(sel);
     },
-    append(child: any) { this.children.push(child); },
+    append(child: any) { child.parentNode = this; this.children.push(child); },
+    remove() {
+      const parent = this.parentNode;
+      if (!parent) return;
+      const index = parent.children.indexOf(this);
+      if (index !== -1) parent.children.splice(index, 1);
+      this.parentNode = undefined;
+    },
     addEventListener() {},
   };
 }
@@ -91,24 +100,48 @@ function stubElement() {
 describe("the client's canvas draw", () => {
   const source = section("// Cache by id+source", "let presentPeople");
 
-  function drawScope() {
+  function drawScope(options: { fail?: (source: string) => boolean } = {}) {
     const canvas = stubElement();
     Object.defineProperty(canvas, "innerHTML", {
       set(value: string) { if (!value) canvas.children.length = 0; },
       get: () => "",
     });
+    const document = {
+      body: stubElement(),
+      createElement: () => stubElement(),
+      getElementById(id: string) {
+        return document.body.children.find((node: any) => node.id === id);
+      },
+    };
+    const renderCalls: Array<{ id: string; source: string }> = [];
+    const posts: Array<{ path: string; body: unknown }> = [];
     const context = createContext({
-      document: { createElement: () => stubElement() },
+      document,
       $: (id: string) => (id === "canvas" ? canvas : stubElement()),
       // Resolves a turn later, so a second draw can start while the first is awaiting.
-      mermaid: { render: (_id: string, src: string) => new Promise((r) => setTimeout(() => r({ svg: `<svg>${src}</svg>` }), 0)) },
-      post: () => {},
+      mermaid: {
+        render: (id: string, src: string) => {
+          renderCalls.push({ id, source: src });
+          const temporary = stubElement();
+          temporary.id = "d" + id;
+          document.body.append(temporary);
+          if (options.fail?.(src)) throw new Error("Syntax error in text");
+          return new Promise((resolve) => setTimeout(() => resolve({ svg: `<svg>${src}</svg>` }), 0));
+        },
+      },
+      post: (path: string, body: unknown) => { posts.push({ path, body }); },
       setTimeout,
     });
-    return { canvas, draw: runInContext(`${source}\ndraw`, context) as Function };
+    return {
+      canvas,
+      document,
+      renderCalls,
+      posts,
+      draw: runInContext(`${source}\ndraw`, context) as Function,
+    };
   }
 
-  const diagram = (id: string) => ({ id, kind: "mermaid", title: id, source: `flowchart TD\n  ${id}` });
+  const diagram = (id: string, source = `flowchart TD\n  ${id}`) => ({ id, kind: "mermaid", title: id, source });
 
   it("renders one section per block", async () => {
     const scope = drawScope();
@@ -116,6 +149,34 @@ describe("the client's canvas draw", () => {
     expect(scope.canvas.children.length).toBe(2);
     expect(scope.canvas.children[0].className).toContain("changed");
     expect(scope.canvas.children[1].className).not.toContain("changed");
+  });
+
+  it("cleans up the temporary node and reports a failed render once", async () => {
+    const scope = drawScope({ fail: () => true });
+    await scope.draw({ blocks: [diagram("bad")] });
+    expect(scope.document.body.children).toHaveLength(0);
+    expect(scope.posts).toHaveLength(1);
+    expect(scope.posts[0].path).toBe("render-error");
+  });
+
+  it("does not retry an unchanged failure, but retries changed source", async () => {
+    const scope = drawScope({ fail: () => true });
+    const first = { blocks: [diagram("a", "bad source one")] };
+    const changed = { blocks: [diagram("a", "bad source two")] };
+    await scope.draw(first);
+    await scope.draw(first);
+    expect(scope.renderCalls).toHaveLength(1);
+    expect(scope.posts).toHaveLength(1);
+
+    await scope.draw(changed);
+    expect(scope.renderCalls).toHaveLength(2);
+    expect(scope.posts).toHaveLength(2);
+  });
+
+  it("cleans up the temporary node after a successful render", async () => {
+    const scope = drawScope();
+    await scope.draw({ blocks: [diagram("ok")] });
+    expect(scope.document.body.children).toHaveLength(0);
   });
 
   it("drops a superseded draw instead of appending its leftovers", async () => {
