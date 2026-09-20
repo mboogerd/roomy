@@ -1,68 +1,255 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Roomy</title>
 <style>
-  :root { --bg:#fbfbfa; --fg:#1d1d1f; --mut:#6b6b70; --line:#e3e3e0; --accent:#3b6fe0; }
+  :root {
+    --bg: #fbfbfa;
+    --fg: #1d1d1f;
+    --mut: #6b6b70;
+    --line: #e3e3e0;
+    --panel: color-mix(in srgb, var(--bg) 86%, var(--fg) 4%);
+    --panel-strong: color-mix(in srgb, var(--bg) 76%, var(--fg) 6%);
+    --accent: #3b6fe0;
+    --accent-soft: color-mix(in srgb, var(--accent) 22%, transparent);
+    --record: #bd4545;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#151517; --fg:#e9e9ea; --mut:#9a9aa0; --line:#2c2c30; --accent:#7ba1f5; }
+    :root {
+      --bg: #151517;
+      --fg: #e9e9ea;
+      --mut: #9a9aa0;
+      --line: #2c2c30;
+      --panel: color-mix(in srgb, var(--bg) 86%, var(--fg) 7%);
+      --panel-strong: color-mix(in srgb, var(--bg) 76%, var(--fg) 10%);
+      --accent: #7ba1f5;
+      --record: #e37575;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin:0; height:100vh; display:grid; grid-template-columns:1fr 340px;
-         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-         background:var(--bg); color:var(--fg); }
-  #canvas { overflow:auto; padding:24px; display:flex; flex-direction:column; gap:20px; }
-  .block { border:1px solid var(--line); border-radius:10px;
-           background:color-mix(in srgb,var(--bg) 85%,var(--fg) 4%); }
-  .block.changed { animation: flash 1.6s ease-out; }
-  @keyframes flash {
-    from { border-color:var(--accent);
-           box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent); }
+  [hidden] { display: none !important; }
+  html, body { min-height: 100%; }
+  body {
+    margin: 0;
+    height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 22rem);
+    overflow: hidden;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
   }
-  .block h2 { margin:0; padding:10px 14px; font-size:12px; font-weight:600; letter-spacing:.04em;
-              text-transform:uppercase; color:var(--mut); border-bottom:1px solid var(--line); }
-  .body { padding:16px; overflow-x:auto; }
-  .body svg { max-width:100%; height:auto; }
-  aside { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
-  #log { flex:1; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
-  .u { font-size:13px; } .u b { color:var(--accent); font-weight:600; }
-  #presence { padding:10px 14px; color:var(--mut); font-size:12px; border-bottom:1px solid var(--line); }
-  #identity { padding:8px 12px 0; color:var(--mut); font-size:12px; }
-  .bar { border-top:1px solid var(--line); padding:10px; display:flex; gap:6px; flex-wrap:wrap; }
-  input, button, select { font:inherit; padding:6px 10px; border:1px solid var(--line);
-                          border-radius:6px; background:var(--bg); color:var(--fg); }
-  input { flex:1; min-width:120px; } button { cursor:pointer; }
-  button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
-  #status { padding:6px 12px; font-size:12px; color:var(--mut); border-top:1px solid var(--line); }
-  .empty { color:var(--mut); margin:auto; text-align:center; }
+  #canvas {
+    min-width: 0;
+    overflow: auto;
+    padding: clamp(18px, 3vw, 34px);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+    grid-auto-rows: max-content;
+    grid-auto-flow: dense;
+    align-content: start;
+    align-items: start;
+    gap: 18px;
+  }
+  .block {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+  }
+  .block.markdown { width: 100%; max-width: 28rem; }
+  .block.changed { animation: block-change 1.25s ease-out; }
+  .block.provisional {
+    opacity: .72;
+    border-style: dashed;
+  }
+  .block.provisional .block-kind { color: var(--accent); }
+  @keyframes block-change {
+    0% {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    100% {
+      border-color: var(--line);
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+  .block h2 {
+    min-width: 0;
+    margin: 0;
+    padding: 10px 14px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--mut);
+    border-bottom: 1px solid var(--line);
+  }
+  .block-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .block-kind { flex: 0 0 auto; font-size: 10px; font-weight: 500; letter-spacing: .08em; }
+  .body { min-width: 0; padding: 16px; overflow-x: auto; }
+  .body svg { display: block; max-width: 100%; height: auto; }
+  .body h3 { margin: 0 0 8px; font-size: 1rem; }
+  .body ul { margin: 0 0 10px; padding-left: 1.2rem; }
+  .body br + br { line-height: 2; }
+  aside {
+    min-height: 0;
+    border-left: 1px solid var(--line);
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto auto;
+    background: color-mix(in srgb, var(--bg) 96%, var(--fg) 1%);
+  }
+  #presence {
+    min-height: 48px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    color: var(--mut);
+    font-size: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .presence-summary { white-space: nowrap; }
+  .people { display: flex; flex-wrap: wrap; gap: 4px; }
+  .person {
+    padding: 2px 7px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .person.current {
+    color: var(--fg);
+    background: var(--panel-strong);
+    border-color: var(--line);
+  }
+  .person.current::before {
+    content: "";
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin: 0 5px 2px 0;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  #identity { padding: 8px 14px 0; color: var(--mut); font-size: 11px; }
+  #transcript-head {
+    padding: 12px 14px 7px;
+    display: flex;
+    justify-content: space-between;
+    color: var(--mut);
+    font-size: 11px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  #follow-state { font-size: 10px; letter-spacing: .04em; }
+  #log {
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    scrollbar-gutter: stable;
+  }
+  .turn {
+    width: 100%;
+    max-width: 42rem;
+    padding: 9px 11px 10px;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  .turn.current { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+  .turn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .turn-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font-weight: 600; }
+  .turn-head time { flex: 0 0 auto; color: var(--mut); font-size: 11px; }
+  .utterance { margin: 4px 0 0; overflow-wrap: anywhere; }
+  .empty { grid-column: 1 / -1; align-self: center; justify-self: center; max-width: 28rem; color: var(--mut); text-align: center; }
+  .bar {
+    border-top: 1px solid var(--line);
+    padding: 10px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .composer { display: block; }
+  .compose-row { display: flex; gap: 6px; }
+  input, button, select {
+    font: inherit;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  input { min-width: 0; flex: 1; }
+  button { cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.recording { background: var(--record); color: #fff; border-color: var(--record); }
+  .mic-dot { color: var(--record); font-size: 11px; }
+  button.recording .mic-dot { color: #fff; animation: mic-pulse 1s ease-in-out infinite; }
+  @keyframes mic-pulse { 50% { opacity: .35; transform: scale(.7); } }
+  .inline-note { margin: 7px 2px 0; color: var(--mut); font-size: 12px; }
+  #status { padding: 7px 12px; color: var(--mut); font-size: 12px; border-top: 1px solid var(--line); }
+  @media (max-width: 900px) {
+    body {
+      grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr) minmax(20rem, 44vh);
+    }
+    #canvas { grid-template-columns: minmax(0, 1fr); padding: 20px; }
+    .block.markdown { max-width: none; }
+    aside { border-top: 1px solid var(--line); border-left: 0; }
+  }
+  /* Only once the board is wide enough for two 300px tracks; spanning two columns in a
+     one-column grid would add an implicit track and scroll the canvas sideways. */
+  @media (min-width: 1100px) {
+    .block.sequence { grid-column: span 2; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .block.changed, button.recording .mic-dot { animation-duration: 1ms; }
+  }
 </style>
 
 <main id="canvas"><p class="empty">Roomy is listening. Start talking, or replay a fixture.</p></main>
 <aside>
-  <div id="presence">No one here yet</div>
+  <div id="presence" aria-live="polite"><span class="presence-summary">No one here yet</span></div>
   <div id="identity"></div>
-  <div id="log"></div>
-  <div class="bar">
-    <input id="text" placeholder="Type what was said...">
-    <button id="mic" title="Web Speech API, Chrome only">mic</button>
+  <div id="transcript-head"><span>Transcript</span><span id="follow-state">following</span></div>
+  <div id="log" aria-live="polite"></div>
+  <div class="bar composer">
+    <div class="compose-row">
+      <input id="text" placeholder="Type what was said...">
+      <button id="mic" type="button" title="Start live transcription" aria-pressed="false">
+        <span class="mic-dot" aria-hidden="true">●</span>
+        <span id="mic-label">Start mic</span>
+      </button>
+    </div>
+    <p id="mic-note" class="inline-note" role="status" aria-live="polite" hidden></p>
   </div>
   <div class="bar">
-    <select id="fixture">
+    <select id="fixture" aria-label="Fixture">
       <option>architecture-debate</option>
       <option>product-brainstorm</option>
       <option>incident-review</option>
     </select>
-    <select id="speed"><option>5</option><option selected>10</option><option>30</option></select>
-    <button id="play">Replay</button>
-    <button id="reset">Reset</button>
+    <select id="speed" aria-label="Replay speed"><option>5</option><option selected>10</option><option>30</option></select>
+    <button id="play" type="button">Replay</button>
+    <button id="reset" type="button">Reset</button>
   </div>
-  <div id="status">idle</div>
+  <div id="status" role="status" aria-live="polite">idle</div>
 </aside>
 
 <script type="module">
 import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
 mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "loose" });
-
 const $ = (id) => document.getElementById(id);
 const roomPath = location.pathname.replace(/\/$/, "");
 const nameKey = "roomy-name";
@@ -80,8 +267,24 @@ const post = (path, body) => fetch(`${roomPath}/${path}`, {
 
 // Cache by id+source so an unchanged block is never re-rendered.
 const rendered = new Map();
+let drawVersion = 0;
 
-async function draw(state, changed) {
+function replayChange(el) {
+  el.classList.remove("changed");
+  void el.offsetWidth;
+  el.classList.add("changed");
+  el.addEventListener("animationend", () => el.classList.remove("changed"), { once: true });
+}
+
+function blockClasses(block, isSpeculative) {
+  if (block.kind === "markdown") return ["block", "markdown", isSpeculative ? "provisional" : ""].filter(Boolean).join(" ");
+  const head = block.source.trim();
+  const layout = /^sequenceDiagram\b/.test(head) ? "sequence" : /^mindmap\b/.test(head) ? "mindmap" : "diagram";
+  return ["block", "diagram", layout, isSpeculative ? "provisional" : ""].filter(Boolean).join(" ");
+}
+
+async function draw(state, changed = [], speculative = []) {
+  const version = ++drawVersion;
   const canvas = $("canvas");
   if (!state.blocks.length) {
     canvas.innerHTML = '<p class="empty">Roomy is listening.</p>';
@@ -89,26 +292,29 @@ async function draw(state, changed) {
     return;
   }
   canvas.innerHTML = "";
-
   for (const b of state.blocks) {
+    // A newer state arrived while we were awaiting a render: that draw owns the canvas now.
+    if (version !== drawVersion) return;
+    const isSpeculative = speculative.includes(b.id);
     const el = document.createElement("section");
-    el.className = "block" + (changed.includes(b.id) ? " changed" : "");
-    el.innerHTML = '<h2></h2><div class="body"></div>';
-    el.querySelector("h2").textContent = b.title;
+    el.className = blockClasses(b, isSpeculative) + (changed.includes(b.id) ? " changed" : "");
+    el.innerHTML = '<h2><span class="block-title"></span><span class="block-kind"></span></h2><div class="body"></div>';
+    el.querySelector(".block-title").textContent = b.title;
+    el.querySelector(".block-kind").textContent = isSpeculative ? "live" : b.kind === "mermaid" ? "diagram" : "note";
     const body = el.querySelector(".body");
     canvas.append(el);
-
+    if (changed.includes(b.id)) replayChange(el);
     const key = b.id + "::" + b.source;
     if (rendered.has(key)) { body.innerHTML = rendered.get(key); continue; }
-
     if (b.kind === "mermaid") {
       try {
         const { svg } = await mermaid.render("m" + b.id + Date.now(), b.source);
         rendered.set(key, svg);
-        body.innerHTML = svg;
+        if (version === drawVersion) body.innerHTML = svg;
       } catch (err) {
+        if (version !== drawVersion) continue;
         // The renderer is the authority: tell the server so it can repair or drop.
-        body.textContent = "...";
+        body.textContent = "Unable to render this diagram yet.";
         post("render-error", { id: b.id, error: String(err?.message ?? err) });
       }
     } else {
@@ -125,22 +331,96 @@ async function draw(state, changed) {
   }
 }
 
+let presentPeople = [];
+let currentSpeaker = "";
+function renderPresence(people = presentPeople) {
+  presentPeople = Array.isArray(people) ? people : [];
+  const container = $("presence");
+  container.innerHTML = "";
+  const summary = document.createElement("span");
+  summary.className = "presence-summary";
+  summary.textContent = presentPeople.length ? `${presentPeople.length} here` : "No one here yet";
+  container.append(summary);
+  if (!presentPeople.length) return;
+  const list = document.createElement("span");
+  list.className = "people";
+  for (const personName of presentPeople) {
+    const person = document.createElement("span");
+    person.className = "person" + (personName === currentSpeaker ? " current" : "");
+    person.textContent = personName;
+    if (personName === currentSpeaker) person.title = "last speaker";
+    list.append(person);
+  }
+  container.append(list);
+}
+
+function atLogBottom(log) {
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 32;
+}
+let followLog = true;
+$("log").addEventListener("scroll", () => {
+  followLog = atLogBottom($("log"));
+  $("follow-state").textContent = followLog ? "following" : "paused";
+});
+function relativeTime(tMs) {
+  const time = Number(tMs);
+  if (!Number.isFinite(time)) return "";
+  const log = $("log");
+  if (log.dataset.startedAt === undefined) log.dataset.startedAt = String(time);
+  const elapsed = Math.max(0, Math.round((time - Number(log.dataset.startedAt)) / 1000));
+  return `+${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+}
+function appendUtterance(utterance) {
+  const log = $("log");
+  const shouldFollow = followLog || atLogBottom(log);
+  const previous = log.lastElementChild;
+  let turn = previous?.classList.contains("turn") && previous.dataset.speaker === utterance.speaker
+    ? previous
+    : null;
+  if (!turn) {
+    turn = document.createElement("article");
+    turn.className = "turn";
+    turn.dataset.speaker = utterance.speaker;
+    turn.innerHTML = '<div class="turn-head"><b></b><time></time></div>';
+    log.append(turn);
+  }
+  turn.querySelector("b").textContent = utterance.speaker;
+  turn.querySelector("time").textContent = relativeTime(utterance.t_ms);
+  const line = document.createElement("p");
+  line.className = "utterance";
+  line.textContent = utterance.text;
+  turn.append(line);
+  for (const oldTurn of log.querySelectorAll(".turn.current")) oldTurn.classList.remove("current");
+  turn.classList.add("current");
+  currentSpeaker = utterance.speaker;
+  renderPresence();
+  if (shouldFollow) requestAnimationFrame(() => {
+    if (followLog) log.scrollTop = log.scrollHeight;
+  });
+}
+function clearLog() {
+  $("log").innerHTML = "";
+  $("log").removeAttribute("data-started-at");
+  currentSpeaker = "";
+  renderPresence();
+  followLog = true;
+  $("follow-state").textContent = "following";
+}
+
 const events = new URL(`${roomPath}/events`, location.href);
 events.searchParams.set("name", name);
 new EventSource(events).onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === "state") {
-    draw(msg.state, msg.changed ?? []);
+    // T3 adds this optional field to the state message; old servers simply send none.
+    const speculative = Array.isArray(msg.speculative)
+      ? msg.speculative
+      : Array.isArray(msg.state?.speculative) ? msg.state.speculative : [];
+    draw(msg.state, Array.isArray(msg.changed) ? msg.changed : [], speculative);
   } else if (msg.type === "utterance") {
-    const d = document.createElement("div");
-    d.className = "u";
-    d.innerHTML = "<b></b> <span></span>";
-    d.querySelector("b").textContent = msg.utterance.speaker + ":";
-    d.querySelector("span").textContent = msg.utterance.text;
-    $("log").append(d);
-    $("log").scrollTop = $("log").scrollHeight;
+    appendUtterance(msg.utterance);
   } else if (msg.type === "presence") {
-    $("presence").textContent = msg.people.length ? "here: " + msg.people.join(", ") : "No one here yet";
+    renderPresence(msg.people);
   } else if (msg.type === "status") {
     $("status").textContent = msg.note ? "error: " + msg.note : msg.busy ? "thinking..." : "idle";
   }
@@ -151,23 +431,71 @@ $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { say(e.target.value); e.target.value = ""; }
 });
 $("play").onclick = () => {
-  $("log").innerHTML = "";
+  clearLog();
   post("replay", { fixture: $("fixture").value, speed: +$("speed").value });
 };
-$("reset").onclick = () => { $("log").innerHTML = ""; rendered.clear(); post("reset"); };
+$("reset").onclick = () => { clearLog(); rendered.clear(); post("reset"); };
+
+function showMicMessage(message) {
+  const note = $("mic-note");
+  note.textContent = message;
+  note.hidden = !message;
+}
 
 // ponytail: Web Speech API - zero infra, Chrome only, no diarization
 // (speaker = whoever owns this tab). Swap for streaming ASR if diarization matters.
 const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-$("mic").onclick = function () {
-  if (!SR) return alert("This browser has no Web Speech API. Use Chrome, or type instead.");
-  if (this._rec) { this._rec.stop(); this._rec = null; this.classList.remove("on"); return; }
+const mic = $("mic");
+const micLabel = $("mic-label");
+let recognition;
+let recording = false;
+function setRecording(next) {
+  recording = next;
+  mic.classList.toggle("recording", recording);
+  mic.setAttribute("aria-pressed", String(recording));
+  micLabel.textContent = recording ? "Stop recording" : "Start mic";
+}
+if (!SR) showMicMessage("Live transcription is unavailable in this browser. Type instead.");
+mic.onclick = () => {
+  if (!SR) {
+    showMicMessage("Live transcription is unavailable in this browser. Type instead.");
+    return;
+  }
+  if (recognition) {
+    const active = recognition;
+    recognition = undefined;
+    setRecording(false);
+    active.stop();
+    showMicMessage("Recording stopped.");
+    return;
+  }
   const rec = new SR();
-  rec.continuous = true; rec.interimResults = false; rec.lang = "en-US";
+  recognition = rec;
+  rec.continuous = true;
+  rec.interimResults = false;
+  rec.lang = "en-US";
+  rec.onstart = () => { setRecording(true); showMicMessage("Listening…"); };
   rec.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) say(e.results[i][0].transcript);
   };
-  rec.onend = () => { if (this._rec) rec.start(); };  // Chrome stops on silence
-  rec.start(); this._rec = rec; this.classList.add("on");
+  rec.onerror = (e) => {
+    if (recognition !== rec) return;
+    recognition = undefined;
+    setRecording(false);
+    showMicMessage(e.error === "not-allowed" ? "Microphone permission was denied. Type instead." : "Microphone stopped. Type instead.");
+  };
+  rec.onend = () => {
+    if (recognition !== rec) return;
+    try { rec.start(); } catch { /* Chrome can report a duplicate start during silence. */ }
+  };
+  try {
+    rec.start();
+    setRecording(true);
+    showMicMessage("Listening…");
+  } catch {
+    recognition = undefined;
+    setRecording(false);
+    showMicMessage("Microphone could not start. Type instead.");
+  }
 };
 </script>
