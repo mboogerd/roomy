@@ -1,6 +1,6 @@
 import type { CanvasState } from "./canvas.ts";
 import type { Utterance } from "./transcript.ts";
-import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt } from "./prompt.ts";
+import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt, buildSpeculatePrompt } from "./prompt.ts";
 import { pickTransport } from "./transport.ts";
 
 // Two-tier: cheap model on every tick, capable model on the periodic rethink.
@@ -18,12 +18,13 @@ export interface LlmStats {
   usage: TokenUsage;
 }
 
-/** The model seam used by Room. Test implementations only need these four methods. */
+/** The model seam used by Room. Test implementations cover the fast and committed paths. */
 export interface Llm {
   tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]>;
   restructure(state: CanvasState, summary: string): Promise<unknown[]>;
   summarize(previous: string, window: Utterance[]): Promise<string>;
   repair(id: string, source: string, error: string): Promise<unknown[]>;
+  speculate(state: CanvasState, text: string): Promise<unknown[]>;
   readonly stats?: LlmStats;
 }
 
@@ -71,6 +72,11 @@ async function restructure(state: CanvasState, summary: string): Promise<unknown
   return parseOps(await complete(RESTRUCTURE_MODEL, p.system, p.user, 8000));
 }
 
+async function speculate(state: CanvasState, text: string): Promise<unknown[]> {
+  const p = buildSpeculatePrompt(state, text);
+  return parseOps(await complete(TICK_MODEL, p.system, p.user, 1200));
+}
+
 async function summarize(previous: string, window: Utterance[]): Promise<string> {
   const p = buildSummaryPrompt(previous, window);
   return (await complete(TICK_MODEL, p.system, p.user, 600)).trim();
@@ -91,4 +97,4 @@ a diagram keyword that does not exist, indentation that is wrong for mindmap.`,
 }
 
 /** The production implementation used when Room is constructed without an argument. */
-export const realLlm: Llm = { tick, restructure, summarize, repair, stats };
+export const realLlm: Llm = { tick, restructure, summarize, repair, speculate, stats };

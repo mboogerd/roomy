@@ -72,6 +72,32 @@ Emit the operations.`,
   };
 }
 
+/** Fast provisional pass over one live segment. The stable canvas is the only context. */
+export function buildSpeculatePrompt(state: CanvasState, text: string) {
+  return {
+    system: `You are Roomy, a silent participant in a live conversation. You keep a shared visual canvas
+in sync with what the group is working out. You never speak; you only edit the canvas.
+
+${OPS_CONTRACT}
+
+${DIAGRAM_GUIDE}
+
+You are running in speculative mode for a thought that is still being spoken. Make the
+smallest useful provisional edit to the stable canvas. Preserve ids and full source for
+blocks that are unchanged. The next speculation replaces this overlay completely, so do
+not emit a delta or assume an earlier speculation is present.
+
+Output only the operations.`,
+    user: `## Stable canvas
+${renderCanvas(state)}
+
+## Live segment
+${text || "(the speaker has not said anything yet)"}
+
+Emit the provisional operations.`,
+  };
+}
+
 /** Slower periodic pass. Allowed to rethink the whole canvas. */
 export function buildRestructurePrompt(state: CanvasState, summary: string) {
   return {
