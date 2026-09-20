@@ -267,6 +267,8 @@ const post = (path, body) => fetch(`${roomPath}/${path}`, {
 
 // Cache by id+source so an unchanged block is never re-rendered.
 const rendered = new Map();
+// Last source that failed to render, per block id: a repeat is not retried or re-reported.
+const failed = new Map();
 let drawVersion = 0;
 
 function replayChange(el) {
@@ -307,15 +309,24 @@ async function draw(state, changed = [], speculative = []) {
     const key = b.id + "::" + b.source;
     if (rendered.has(key)) { body.innerHTML = rendered.get(key); continue; }
     if (b.kind === "mermaid") {
+      if (failed.get(b.id) === b.source) {
+        body.textContent = "Unable to render this diagram yet.";
+        continue;
+      }
+      const renderId = "m" + b.id + Date.now();
       try {
-        const { svg } = await mermaid.render("m" + b.id + Date.now(), b.source);
+        const { svg } = await mermaid.render(renderId, b.source);
+        failed.delete(b.id);
         rendered.set(key, svg);
         if (version === drawVersion) body.innerHTML = svg;
       } catch (err) {
+        failed.set(b.id, b.source);
         if (version !== drawVersion) continue;
         // The renderer is the authority: tell the server so it can repair or drop.
         body.textContent = "Unable to render this diagram yet.";
         post("render-error", { id: b.id, error: String(err?.message ?? err) });
+      } finally {
+        document.getElementById("d" + renderId)?.remove();
       }
     } else {
       const html = b.source
@@ -434,7 +445,7 @@ $("play").onclick = () => {
   clearLog();
   post("replay", { fixture: $("fixture").value, speed: +$("speed").value });
 };
-$("reset").onclick = () => { clearLog(); rendered.clear(); post("reset"); };
+$("reset").onclick = () => { clearLog(); rendered.clear(); failed.clear(); post("reset"); };
 
 function showMicMessage(message) {
   const note = $("mic-note");
