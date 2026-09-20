@@ -64,12 +64,21 @@ function stubElement() {
   const parts = new Map<string, any>();
   return {
     id: "",
-    className: "",
+    // className and classList are one thing in the DOM; the page uses both on the same node.
+    get className() { return [...classes].join(" "); },
+    set className(value: string) {
+      classes.clear();
+      for (const c of value.split(/\s+/).filter(Boolean)) classes.add(c);
+    },
     textContent: "",
     innerHTML: "",
     title: "",
     hidden: false,
     offsetWidth: 0,
+    scrollHeight: 0,
+    scrollTop: 0,
+    clientHeight: 0,
+    dataset: {} as Record<string, string | undefined>,
     onclick: undefined as undefined | (() => void),
     parentNode: undefined as any,
     attributes: new Map<string, string>(),
@@ -84,6 +93,11 @@ function stubElement() {
     querySelector(sel: string) {
       if (!parts.has(sel)) parts.set(sel, stubElement());
       return parts.get(sel);
+    },
+    get lastElementChild() { return this.children.at(-1); },
+    querySelectorAll(sel: string) {
+      const wanted = sel.split(".").filter(Boolean);
+      return this.children.filter((child: any) => wanted.every((c) => child.classList.contains(c)));
     },
     append(child: any) { child.parentNode = this; this.children.push(child); },
     remove() {
@@ -204,6 +218,44 @@ describe("the client's canvas draw", () => {
     await scope.draw({ blocks: [diagram("a"), diagram("b")] }, [], ["b"]);
     expect(scope.canvas.children[0].className).not.toContain("provisional");
     expect(scope.canvas.children[1].className).toContain("provisional");
+  });
+});
+
+describe("the client's transcript", () => {
+  const source = section("function atLogBottom", "function clearLog");
+
+  function logScope() {
+    const log = stubElement();
+    const context = createContext({
+      document: { createElement: () => stubElement() },
+      $: (id: string) => (id === "log" ? log : stubElement()),
+      renderPresence: () => {},
+      requestAnimationFrame: () => {},
+    });
+    return { log, append: runInContext(`${source}\nappendUtterance`, context) as Function };
+  }
+
+  const said = (text: string, t_ms: number) => ({ speaker: "Ada", text, t_ms });
+
+  it("keeps a steering utterance out of the speaker's turn and marks it", () => {
+    const { log, append } = logScope();
+    append(said("The gateway waits on the service.", 0));
+    append(said("Then it hands back a token.", 1000));
+    expect(log.children).toHaveLength(1);
+
+    append({ ...said("Roomy, draw that as a sequence diagram", 2000), instruction: true });
+    expect(log.children).toHaveLength(2);
+    expect(log.children[1].className).toContain("instruction");
+    expect(log.children[1].children.at(-1).textContent).toBe("Roomy, draw that as a sequence diagram");
+
+    // The next ordinary utterance starts a fresh turn rather than joining the instruction.
+    append(said("Which service owns the exchange?", 3000));
+    expect(log.children).toHaveLength(3);
+    expect(log.children[2].className).not.toContain("instruction");
+  });
+
+  it("has a style for a steering turn", () => {
+    expect(html).toContain(".turn.instruction");
   });
 });
 

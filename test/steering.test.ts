@@ -1,11 +1,39 @@
 import { describe, expect, it, vi } from "vitest";
 import { emptyCanvas } from "../src/canvas.ts";
 import { buildTickPrompt } from "../src/prompt.ts";
+import type { Llm } from "../src/llm.ts";
 import { isSteeringUtterance, Room, SEGMENT_PAUSE_MS, type ServerMsg } from "../src/room.ts";
 import type { Utterance } from "../src/transcript.ts";
 import { StubLlm } from "./stub-llm.ts";
 
 const utterance = (speaker: string, text: string, t_ms = 0): Utterance => ({ t_ms, speaker, text });
+
+const addressed = (window: Utterance[]) =>
+  window.some((u) => (u as Utterance & { instruction?: true }).instruction === true);
+
+const sequence = {
+  op: "upsert",
+  id: "auth-flow",
+  kind: "mermaid",
+  title: "Auth flow",
+  source: "sequenceDiagram\n    Gateway->>Service: exchange token",
+};
+
+/**
+ * A model that obeys: an addressed commit draws what was asked, an ordinary one keeps the
+ * stub default. Standing in for the real model is what lets a test show the canvas move
+ * in response to steering without a network call.
+ */
+const obeying = (stub: StubLlm): Llm => ({
+  async tick(state, window, summary) {
+    const ops = await stub.tick(state, window, summary);
+    return addressed(window) ? [sequence] : ops;
+  },
+  restructure: (state, summary) => stub.restructure(state, summary),
+  summarize: (previous, window) => stub.summarize(previous, window),
+  repair: (id, source, error) => stub.repair(id, source, error),
+  speculate: (state, text) => stub.speculate(state, text),
+});
 
 describe("steering utterances", () => {
   it("only treats a leading Roomy as direct address", () => {
@@ -51,6 +79,35 @@ describe("steering utterances", () => {
       type: "utterance",
       utterance: { text: "Roomy, draw that as a sequence diagram", instruction: true },
     });
+    room.stop();
+  });
+
+  it("moves the canvas on the next commit, with the instruction in the prompt the model sees", async () => {
+    const stub = new StubLlm();
+    const room = new Room(obeying(stub));
+
+    room.say(utterance("Ada", "The gateway waits on the service before it hands back a token."));
+    await room.maybeTick();
+    const drawn = room.stable.blocks.map((block) => block.id);
+    expect(drawn).toHaveLength(1);
+
+    room.say(utterance("Ada", "Roomy, draw that as a sequence diagram", 100));
+    await room.maybeTick();
+
+    // The commit that carries the instruction is the one that redraws the canvas.
+    expect(room.entries).toHaveLength(2);
+    expect(room.entries[1]?.ops).toEqual([sequence]);
+    expect(room.stable.blocks.map((block) => block.id)).toEqual([...drawn, "auth-flow"]);
+    expect(room.stable.blocks.at(-1)?.source).toContain("sequenceDiagram");
+
+    // The prompt text the model receives for that commit, built from the window it was given.
+    const commit = stub.calls.filter((call) => call.method === "tick").at(-1);
+    const prompt = buildTickPrompt(emptyCanvas(), commit?.window ?? [], "");
+    expect(prompt.user).toContain("A participant asked: Roomy, draw that as a sequence diagram");
+    expect(prompt.user.split("## Participant instruction")[0]).not.toContain("Roomy");
+
+    // Steering is never conversation: no block on the canvas is drawn from its text.
+    expect(room.stable.blocks.map((block) => block.source).join("\n")).not.toContain("Roomy");
     room.stop();
   });
 

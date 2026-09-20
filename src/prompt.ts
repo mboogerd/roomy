@@ -113,12 +113,11 @@ function renderWindow(window: Utterance[]): string {
   return conversation.map((u) => `${u.speaker}: ${u.text}`).join("\n");
 }
 
-function renderInstructionSection(window: Utterance[], extra?: string): string {
+function renderInstructionSection(window: Utterance[]): string {
   const instructions = window
     .filter(isInstruction)
     .map((utterance) => utterance.text.trim())
     .filter(Boolean);
-  if (extra?.trim()) instructions.push(extra.trim());
   if (!instructions.length) return "";
   return `## Participant instruction
 ${instructions.map((instruction) => `A participant asked: ${instruction}`).join("\n")}
@@ -128,7 +127,7 @@ to blocks against the stable canvas above; do not invent a command grammar.`;
 }
 
 /** Fast incremental pass. Runs on every committed segment. */
-export function buildTickPrompt(state: CanvasState, window: Utterance[], summary: string, instruction?: string) {
+export function buildTickPrompt(state: CanvasState, window: Utterance[], summary: string) {
   return {
     system: `${IDENTITY}
 
@@ -159,7 +158,7 @@ ${renderCanvas(state)}
 ## What was just said
 ${renderWindow(window)}
 
-${renderInstructionSection(window, instruction)}
+${renderInstructionSection(window)}
 
 Emit the operations.`,
   };
