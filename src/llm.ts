@@ -61,23 +61,23 @@ async function complete(model: string, system: string, user: string, maxTokens =
   return response.text;
 }
 
-async function tickImpl(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
+async function tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
   const p = buildTickPrompt(state, window, summary);
   return parseOps(await complete(TICK_MODEL, p.system, p.user));
 }
 
-async function restructureImpl(state: CanvasState, summary: string): Promise<unknown[]> {
+async function restructure(state: CanvasState, summary: string): Promise<unknown[]> {
   const p = buildRestructurePrompt(state, summary);
   return parseOps(await complete(RESTRUCTURE_MODEL, p.system, p.user, 8000));
 }
 
-async function summarizeImpl(previous: string, window: Utterance[]): Promise<string> {
+async function summarize(previous: string, window: Utterance[]): Promise<string> {
   const p = buildSummaryPrompt(previous, window);
   return (await complete(TICK_MODEL, p.system, p.user, 600)).trim();
 }
 
 /** Second chance for a block the browser could not render. */
-async function repairImpl(id: string, source: string, error: string): Promise<unknown[]> {
+async function repair(id: string, source: string, error: string): Promise<unknown[]> {
   const text = await complete(
     TICK_MODEL,
     `You fix broken mermaid diagrams. Output ONLY a JSON array with a single upsert operation:
@@ -91,35 +91,4 @@ a diagram keyword that does not exist, indentation that is wrong for mindmap.`,
 }
 
 /** The production implementation used when Room is constructed without an argument. */
-export const realLlm: Llm = {
-  tick: tickImpl,
-  restructure: restructureImpl,
-  summarize: summarizeImpl,
-  repair: repairImpl,
-  stats,
-};
-
-/** Reset aggregate transport telemetry between standalone evaluations. */
-export function resetLlmStats() {
-  stats.calls = 0;
-  stats.usage.input = 0;
-  stats.usage.output = 0;
-  stats.usage.cacheRead = 0;
-}
-
-// Keep the original function exports for callers that use llm.ts directly.
-export function tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
-  return realLlm.tick(state, window, summary);
-}
-
-export function restructure(state: CanvasState, summary: string): Promise<unknown[]> {
-  return realLlm.restructure(state, summary);
-}
-
-export function summarize(previous: string, window: Utterance[]): Promise<string> {
-  return realLlm.summarize(previous, window);
-}
-
-export function repair(id: string, source: string, error: string): Promise<unknown[]> {
-  return realLlm.repair(id, source, error);
-}
+export const realLlm: Llm = { tick, restructure, summarize, repair, stats };

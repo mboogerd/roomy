@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runEval } from "../src/eval.ts";
 import { validateOp } from "../src/canvas.ts";
 import { Room, type ServerMsg } from "../src/room.ts";
 import type { Llm } from "../src/llm.ts";
@@ -28,17 +31,36 @@ const flow = (id: string, source = "flowchart TD\n  A --> B") => ({
 });
 
 describe("Room scenarios", () => {
+  it("has all three fixtures", () => {
+    expect(fixtureFiles).toEqual([
+      "architecture-debate.json",
+      "incident-review.json",
+      "product-brainstorm.json",
+    ]);
+  });
+
   it.each(fixtureFiles)("replays %s without timers or network", async (file) => {
     const fixture = readFixture(file);
-    const room = new Room(new StubLlm());
+    const stub = new StubLlm();
+    const room = new Room(stub);
     const messages: ServerMsg[] = [];
     room.subscribe((message) => messages.push(message));
 
-    for (const utterance of fixture.utterances) room.say(utterance);
+    // One utterance at a time, exactly as eval drives it: MIN_NEW_CHARS decides when a
+    // tick fires, so the summary cadence runs too instead of a single whole-transcript batch.
+    for (const utterance of fixture.utterances) {
+      room.say(utterance);
+      await room.maybeTick();
+    }
     await room.maybeTick();
 
     expect(messages.filter((message) => message.type === "utterance").map((message) => message.utterance))
       .toEqual(fixture.utterances);
+
+    const ticks = stub.calls.filter((call) => call.method === "tick" || call.method === "restructure");
+    expect(ticks.length).toBeGreaterThan(1);
+    expect(stub.calls.some((call) => call.method === "summarize")).toBe(true);
+
     expect(room.state.blocks.length).toBeGreaterThan(0);
     for (const block of room.state.blocks) {
       expect(validateOp({ op: "upsert", ...block }).ok).toBe(true);
@@ -47,7 +69,20 @@ describe("Room scenarios", () => {
     const revisions = messages
       .filter((message): message is Extract<ServerMsg, { type: "state" }> => message.type === "state")
       .map((message) => message.state.rev);
-    expect(revisions).toEqual([...revisions].sort((a, b) => a - b));
+    expect(revisions.length).toBe(ticks.length + 1); // the subscribe snapshot, then one per applied batch
+    for (let i = 1; i < revisions.length; i++) expect(revisions[i]).toBeGreaterThan(revisions[i - 1]);
+  });
+
+  it("constructs with no argument and stays offline below the tick threshold", async () => {
+    const room = new Room(); // defaults to the real LLM; short input means it is never called
+    const messages: ServerMsg[] = [];
+    room.subscribe((message) => messages.push(message));
+
+    room.say({ t_ms: 0, speaker: "Test", text: "too short to tick" });
+    await room.maybeTick();
+
+    expect(room.state).toEqual({ blocks: [], rev: 0 });
+    expect(messages.filter((message) => message.type === "utterance")).toHaveLength(1);
   });
 
   it("applies good ops and counts malformed ops from the same batch", async () => {
@@ -123,5 +158,42 @@ describe("Room scenarios", () => {
     resolveTick([flow("done")]);
     await Promise.all([first, second]);
     expect(room.state.blocks.map((block) => block.id)).toEqual(["done"]);
+  });
+});
+
+describe("eval harness", () => {
+  const outDir = () => mkdtempSync(join(tmpdir(), "roomy-eval-"));
+
+  it("writes a fenced report and prints the summary line", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const stub = new StubLlm();
+    stub.queueTick([flow("outage-timeline", "flowchart TD\n  Alert --> Pager")]);
+
+    const { reportPath, summaryLine } = await runEval("incident-review", { llm: stub, outDir: outDir() });
+
+    expect(log).toHaveBeenCalledWith(summaryLine);
+    log.mockRestore();
+
+    for (const field of ["fixture=", "calls=", "ops applied=", "ops rejected=", "blocks by kind=", "wall time=", "tokens input="])
+      expect(summaryLine).toContain(field);
+    expect(summaryLine).toContain(`calls=${stub.stats.calls}`);
+    expect(summaryLine).toContain(`tokens input=${stub.stats.usage.input}`);
+
+    const report = readFileSync(reportPath, "utf8");
+    expect(report.startsWith("# Eval: incident-review")).toBe(true);
+    expect(report).toContain("## outage-timeline\n\n```mermaid\nflowchart TD\n  Alert --> Pager\n```");
+    expect(report).toContain("```markdown"); // the stub's default blocks
+    expect(report.trimEnd().endsWith(summaryLine)).toBe(true);
+  });
+
+  it("fails fast with a clear message when the LLM errors", async () => {
+    const stub = new StubLlm().queueTick(new Error("transport exploded"));
+    await expect(runEval("incident-review", { llm: stub, outDir: outDir() }))
+      .rejects.toThrow(/LLM transport error:.*transport exploded/);
+  });
+
+  it("rejects an unknown fixture rather than reaching for the network", async () => {
+    await expect(runEval("no-such-fixture", { llm: new StubLlm(), outDir: outDir() }))
+      .rejects.toThrow(/could not read fixture "no-such-fixture"/);
   });
 });

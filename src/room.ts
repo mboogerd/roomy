@@ -9,6 +9,9 @@ export const RESTRUCTURE_EVERY = 15; // ticks between full-canvas rethinks (~2 m
 
 type Listener = (msg: ServerMsg) => void;
 
+// What eval.ts reports on; the server ignores it.
+// ponytail: rejectedReasons grows for the life of the room. Fine for a fixture run and
+// for a meeting-length session; cap it or aggregate into counts if rooms become long-lived.
 export interface RoomMetrics {
   opsApplied: number;
   rejectedReasons: string[];
@@ -75,7 +78,11 @@ export class Room {
     this.emit({ type: "state", state: this.state, changed: [] });
   }
 
-  /** Drop the tick if one is already running — a backlog of stale windows helps nobody. */
+  /**
+   * Runs one tick and resolves once the LLM work it waited on is done. Never starts a
+   * second tick concurrently — a backlog of stale windows helps nobody — so a call made
+   * while one is in flight just awaits that one.
+   */
   async maybeTick() {
     if (this.inFlight) {
       await this.inFlight;

@@ -5,12 +5,14 @@
  * `queueSummarize("summary")`, or `queueRepair([op, ...])` before driving the room.
  * Queue an `Error` to make that call reject. Unqueued tick calls return one markdown
  * upsert derived from the utterances they received; unqueued repairs return no ops.
- * `calls` records inputs for scenario assertions. T3 can extend these queues and
- * T7 can use the recorded inputs when it extends the prompt seam.
+ * `calls` records inputs for scenario assertions and `stats` mirrors the real
+ * implementation's call and token counters so the eval harness can run offline.
+ * T3 can extend these queues and T7 can use the recorded inputs when it extends
+ * the prompt seam.
  */
 
 import type { CanvasState } from "../src/canvas.ts";
-import type { Llm } from "../src/llm.ts";
+import type { Llm, LlmStats } from "../src/llm.ts";
 import type { Utterance } from "../src/transcript.ts";
 
 type Scripted<T> = T | Error;
@@ -33,6 +35,7 @@ const copyState = (state: CanvasState): CanvasState => ({
 
 export class StubLlm implements Llm {
   readonly calls: StubCall[] = [];
+  readonly stats: LlmStats = { calls: 0, usage: { input: 0, output: 0, cacheRead: 0 } };
   private readonly tickQueue: Array<Scripted<unknown[]>> = [];
   private readonly restructureQueue: Array<Scripted<unknown[]>> = [];
   private readonly summaryQueue: Array<Scripted<string>> = [];
@@ -59,8 +62,16 @@ export class StubLlm implements Llm {
     return this;
   }
 
+  /** Every scripted call is counted, the way complete() counts real transport calls. */
+  private record(call: StubCall) {
+    this.calls.push(call);
+    this.stats.calls++;
+    this.stats.usage.input += 10;
+    this.stats.usage.output += 5;
+  }
+
   async tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
-    this.calls.push({ method: "tick", state: copyState(state), window: window.slice(), summary });
+    this.record({ method: "tick", state: copyState(state), window: window.slice(), summary });
     const scripted = this.tickQueue.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted) return scripted;
@@ -77,7 +88,7 @@ export class StubLlm implements Llm {
   }
 
   async restructure(state: CanvasState, summary: string): Promise<unknown[]> {
-    this.calls.push({ method: "restructure", state: copyState(state), summary });
+    this.record({ method: "restructure", state: copyState(state), summary });
     const scripted = this.restructureQueue.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted) return scripted;
@@ -86,7 +97,7 @@ export class StubLlm implements Llm {
   }
 
   async summarize(previous: string, window: Utterance[]): Promise<string> {
-    this.calls.push({ method: "summarize", previous, window: window.slice() });
+    this.record({ method: "summarize", previous, window: window.slice() });
     const scripted = this.summaryQueue.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted !== undefined) return scripted;
@@ -94,7 +105,7 @@ export class StubLlm implements Llm {
   }
 
   async repair(id: string, source: string, error: string): Promise<unknown[]> {
-    this.calls.push({ method: "repair", id, source, error });
+    this.record({ method: "repair", id, source, error });
     const scripted = this.repairQueue.shift();
     if (scripted instanceof Error) throw scripted;
     return scripted ?? [];
