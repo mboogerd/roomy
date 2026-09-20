@@ -324,6 +324,26 @@ describe("commit cadence", () => {
     expect(stub.calls.filter((call) => call.method === "restructure")).toHaveLength(0);
     room.stop();
   });
+
+  it("counts growth again from zero after a pass, so a second rethink is earned not free", async () => {
+    const stub = new StubLlm();
+    const room = new Room(stub);
+    // Enough commits for two passes: the stub's default tick writes a fresh block every
+    // time, so every commit grows and the cadence is the only thing deciding the passes.
+    for (let i = 0; i < RESTRUCTURE_EVERY * 2 + 2; i++) {
+      room.say(utterance(i % 2 ? "Ada" : "Lin", `Thought number ${i}, long enough to commit on its own.`, i * 10));
+    }
+    await room.maybeTick();
+
+    const commitPath = stub.calls.filter((call) => call.method === "tick" || call.method === "restructure");
+    // Exactly two, and the second only after another RESTRUCTURE_EVERY changing commits.
+    // Without the reset the counter stays above the cadence and every later commit is a
+    // Sonnet rethink, which is the expensive way for this to break.
+    expect(room.metrics.restructurePasses).toBe(2);
+    expect(commitPath.flatMap((call, index) => call.method === "restructure" ? [index] : []))
+      .toEqual([RESTRUCTURE_EVERY, RESTRUCTURE_EVERY * 2 + 1]);
+    room.stop();
+  });
 });
 
 describe("canvasGrew", () => {

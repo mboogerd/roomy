@@ -30,7 +30,11 @@ export interface Entry {
   segment: Segment;
   ops: unknown[];
   snapshot: CanvasState;
-  /** The canvas as it was before this entry's ops. Lets a reader diff a restructure. */
+  /**
+   * The canvas as it was before this entry's ops. Lets a reader diff a restructure.
+   * ponytail: a full copy per entry, kept for the life of the room and read only by the
+   * eval report. Store it for restructure entries alone if room memory starts to matter.
+   */
   before: CanvasState;
   /** True when this entry's ops came from the restructure pass rather than a tick. */
   restructure?: boolean;
