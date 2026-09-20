@@ -1,6 +1,6 @@
 # T4b — Failed diagrams must not litter the page
 
-**Status:** not-started
+**Status:** merged (C2b follow-up PASS)
 **Model:** gpt-5.6-luna @ max · **Escalate to:** gpt-5.6-sol @ xhigh
 **Wave:** 2 follow-up (C2b) · **Branches:** `ticket/T4b`
 

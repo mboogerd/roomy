@@ -203,8 +203,8 @@ Parallel: T3, T4 — T3 owns `src/`, T4 owns `public/index.html`. Disjoint.
 
 | Ticket | Nature | Model | Session | Branch | Evaluator | Status |
 |---|---|---|---|---|---|---|
-| T3 | Replace the tick loop with the journal pipeline | gpt-5.6-luna@max | fresh | ticket/T3 | claude-opus-5 | not-started |
-| T4 | Client visual pass | gpt-5.6-luna@max | fresh | ticket/T4 | claude-opus-5 | not-started |
+| T3 | Replace the tick loop with the journal pipeline | gpt-5.6-luna@max | fresh | ticket/T3 | claude-opus-5 | merged |
+| T4 | Client visual pass | gpt-5.6-luna@max | fresh | ticket/T4 | claude-opus-5 | merged |
 
 **Checkpoint C2 — verification.** As C1. T3's evaluator must additionally confirm the
 three invariants from `docs/pipeline.md` are each pinned by a test that would fail if the
@@ -276,3 +276,15 @@ safety classifier blocks raw `docker run` with the bypass flags. Fallback decisi
   with `ROOMY_LLM=cli` cannot authenticate inside any worker. Real evals run on the HOST by the
   orchestrator (from a clean clone of the branch or main) and are attached as evidence.
 - zsh gotcha: write `${id}` not `$id` before a colon (`$id:refs` is a zsh modifier).
+- Wave 2: T3, T4 merged (evaluators PASS after repair); gate green (55 tests). C1 host eval smoke:
+  incident-review 15 calls, 13 ops applied, 0 rejected, 377 s wall (cli backend).
+- C2b (real browser): FAILED first look — mermaid error nodes leaked into document.body (27 after one
+  replay) and failed blocks re-rendered every update. Wrote `docs/tickets/T4b.md`, dispatched, PASS,
+  merged (59 tests). Re-look: 0 leaks; 1400px = three-column dense grid of content-sized cards, 900px =
+  single column with rail below; presence shows "2 here" with a second participant. Remaining defect
+  is content, not client: the LLM's `timeline` uses quoted `"14:02"` periods, which mermaid rejects;
+  recorded in T5 as the first thing to fix.
+- Amend evidence (T3 report): amend-would-have-mattered = 0 on all three fixtures.
+- Fallback decision (Wave 3): T5 needs a live LLM to hill-climb and no container can reach one
+  (credentials are scrubbed). T5 runs as an in-process opus agent on the host in its own clone
+  (never a worktree); its evaluator still runs in Docker and reads the attached eval reports.
