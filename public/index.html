@@ -167,6 +167,18 @@
     background: var(--panel);
   }
   .turn.current { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); }
+  .turn.instruction {
+    border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+    background: color-mix(in srgb, var(--accent) 9%, var(--panel));
+  }
+  .turn.instruction .turn-head b::after {
+    content: " · instruction";
+    color: var(--mut);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
   .turn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
   .turn-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--accent); font-weight: 600; }
   .turn-head time { flex: 0 0 auto; color: var(--mut); font-size: 11px; }
@@ -386,12 +398,14 @@ function appendUtterance(utterance) {
   const log = $("log");
   const shouldFollow = followLog || atLogBottom(log);
   const previous = log.lastElementChild;
-  let turn = previous?.classList.contains("turn") && previous.dataset.speaker === utterance.speaker
+  const instruction = utterance.instruction === true;
+  let turn = !instruction && previous?.classList.contains("turn")
+    && !previous.classList.contains("instruction") && previous.dataset.speaker === utterance.speaker
     ? previous
     : null;
   if (!turn) {
     turn = document.createElement("article");
-    turn.className = "turn";
+    turn.className = "turn" + (instruction ? " instruction" : "");
     turn.dataset.speaker = utterance.speaker;
     turn.innerHTML = '<div class="turn-head"><b></b><time></time></div>';
     log.append(turn);

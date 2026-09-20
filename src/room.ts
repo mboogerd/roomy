@@ -16,6 +16,18 @@ export const RESTRUCTURE_EVERY = 16;
 
 type Listener = (msg: ServerMsg) => void;
 
+type InstructionUtterance = Utterance & { instruction: true };
+
+/**
+ * Direct address is intentionally only a leading-word check. Punctuation around the
+ * utterance is not part of the check, but the rest of the speech is left untouched for
+ * the prompt and transcript.
+ */
+export function isSteeringUtterance(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
+  return /^roomy(?:$|[\s\p{P}])/u.test(normalized);
+}
+
 export interface Segment {
   id: number;
   speaker: string;
@@ -79,7 +91,7 @@ export interface RoomMetrics {
 export type ServerMsg =
   // Full state on every change, plus which ids moved, so the client needs no op applier.
   | { type: "state"; state: CanvasState; changed: string[]; speculative?: string[] }
-  | { type: "utterance"; utterance: Utterance }
+  | { type: "utterance"; utterance: Utterance & { instruction?: true } }
   | { type: "status"; busy: boolean; note?: string }
   | { type: "presence"; people: string[] };
 
@@ -159,6 +171,8 @@ export class Room {
 
   private carry?: Segment;
   private readonly pendingSegments: Segment[] = [];
+  private pendingInstructions: InstructionUtterance[] = [];
+  private readonly instructionsBySegment = new Map<number, InstructionUtterance[]>();
   private commitLoop?: Promise<void>;
   private speculation?: SpeculationRequest & { promise: Promise<SpeculationResult> };
   private readonly commitMemo = new Map<number, { ops: unknown[]; restructure: boolean }>();
@@ -206,9 +220,21 @@ export class Room {
 
   say(u: Utterance) {
     const utterance = copyUtterance(u);
+    const steering = isSteeringUtterance(utterance.text);
     this.transcript.push(utterance);
-    this.considerAmend(utterance);
-    this.emit({ type: "utterance", utterance });
+    if (!steering) this.considerAmend(utterance);
+    this.emit({ type: "utterance", utterance: steering ? { ...utterance, instruction: true } : utterance });
+
+    if (steering) {
+      this.pendingInstructions.push({ ...utterance, instruction: true });
+      // The addressed utterance is a boundary, never conversation in the segment that
+      // preceded it. The instruction is assigned to whichever commit is next.
+      this.closeLive(true);
+      this.flushCarry();
+      this.attachPendingInstructions();
+      this.resetPauseTimer();
+      return;
+    }
 
     if (!this.live) {
       if (this.carry && this.carry.speaker === utterance.speaker) {
@@ -252,6 +278,8 @@ export class Room {
     this.live = undefined;
     this.carry = undefined;
     this.pendingSegments.length = 0;
+    this.pendingInstructions = [];
+    this.instructionsBySegment.clear();
     this.liveOps = [];
     this.stable = emptyCanvas();
     this.state = this.stable;
@@ -283,11 +311,9 @@ export class Room {
    */
   async maybeTick() {
     this.closeLive(true);
-    if (this.carry) {
-      const carried = this.carry;
-      this.carry = undefined;
-      this.enqueueSegment(carried);
-    }
+    this.flushCarry();
+    this.attachPendingInstructions();
+    if (this.pendingInstructions.length && !this.pendingSegments.length) this.enqueueInstructionSegment();
     await this.drainCommits();
   }
 
@@ -312,13 +338,31 @@ export class Room {
     this.live.version++;
   }
 
+  private makeInstructionSegment(instruction: InstructionUtterance): Segment {
+    return {
+      id: this.nextSegmentId++,
+      speaker: instruction.speaker,
+      text: "",
+      utterances: [],
+      openedAt: instruction.t_ms,
+      closedAt: instruction.t_ms,
+      version: 1,
+    };
+  }
+
   private resetPauseTimer() {
     this.clearPauseTimer();
-    if (!this.live) return;
+    if (!this.live) {
+      if (this.pendingInstructions.length) {
+        this.pauseTimer = setTimeout(() => this.forcePendingInstruction(), SEGMENT_PAUSE_MS);
+      }
+      return;
+    }
     const segmentId = this.live.id;
     this.pauseTimer = setTimeout(() => {
       if (this.live?.id !== segmentId) return;
-      this.closeLive(false);
+      if (this.pendingInstructions.length) this.forcePendingInstruction();
+      else this.closeLive(false);
     }, SEGMENT_PAUSE_MS);
   }
 
@@ -345,9 +389,40 @@ export class Room {
     this.enqueueSegment(segment);
   }
 
+  private flushCarry() {
+    if (!this.carry) return;
+    const carried = this.carry;
+    this.carry = undefined;
+    this.enqueueSegment(carried);
+  }
+
   private enqueueSegment(segment: Segment) {
     this.pendingSegments.push(segment);
+    this.attachPendingInstructions();
     void this.drainCommits();
+  }
+
+  /** Attach an instruction to the earliest segment that has not started committing. */
+  private attachPendingInstructions() {
+    if (!this.pendingInstructions.length || !this.pendingSegments.length) return;
+    const segment = this.pendingSegments[0];
+    const existing = this.instructionsBySegment.get(segment.id) ?? [];
+    this.instructionsBySegment.set(segment.id, [...existing, ...this.pendingInstructions]);
+    this.pendingInstructions = [];
+  }
+
+  private enqueueInstructionSegment() {
+    const instruction = this.pendingInstructions[0];
+    if (instruction) this.enqueueSegment(this.makeInstructionSegment(instruction));
+  }
+
+  /** Force an instruction-only commit when no ordinary segment arrives after the address. */
+  private forcePendingInstruction() {
+    this.clearPauseTimer();
+    if (this.live) this.closeLive(true);
+    this.flushCarry();
+    this.attachPendingInstructions();
+    if (this.pendingInstructions.length && !this.pendingSegments.length) this.enqueueInstructionSegment();
   }
 
   private drainCommits(): Promise<void> {
@@ -382,9 +457,14 @@ export class Room {
       if (!memo) {
         const base = copyState(this.stable);
         const previous = this.entries.slice(-2).flatMap((entry) => entry.segment.utterances);
-        const window = [...previous, ...segment.utterances].map(copyUtterance);
+        const instructions = this.instructionsBySegment.get(segment.id) ?? [];
+        // Instruction markers travel through the existing utterance-window seam. The
+        // prompt renderer removes them from conversation and gives them their own section.
+        const window = [...previous, ...segment.utterances, ...instructions].map(copyUtterance);
         // The growth check: only commits that changed the canvas earn the next rethink.
-        const restructure = this.growthSinceRestructure >= RESTRUCTURE_EVERY;
+        // Keep an addressed commit on the tick path: restructure() has no window seam and
+        // therefore cannot receive a participant instruction without changing src/llm.ts.
+        const restructure = instructions.length === 0 && this.growthSinceRestructure >= RESTRUCTURE_EVERY;
         this.beginWork();
         let ops: unknown[];
         try {
@@ -400,6 +480,7 @@ export class Room {
 
       if (epoch !== this.roomEpoch) return true;
       this.applyCommitted(segment, memo.ops, memo.restructure);
+      this.instructionsBySegment.delete(segment.id);
       this.metrics.segmentsCommitted++;
       this.summaryWindow.push(...segment.utterances.map(copyUtterance));
       this.recordLastCommit(segment);

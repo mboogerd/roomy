@@ -29,6 +29,7 @@ export interface StubCall {
   source?: string;
   error?: string;
   text?: string;
+  instruction?: string;
 }
 
 const copyState = (state: CanvasState): CanvasState => ({
@@ -80,13 +81,27 @@ export class StubLlm implements Llm {
   }
 
   async tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
-    this.record({ method: "tick", state: copyState(state), window: window.slice(), summary });
+    const instructions = window
+      .filter((utterance) => (utterance as Utterance & { instruction?: true }).instruction === true)
+      .map((utterance) => utterance.text)
+      .join("\n");
+    this.record({
+      method: "tick",
+      state: copyState(state),
+      window: window.slice(),
+      summary,
+      ...(instructions ? { instruction: instructions } : {}),
+    });
     const scripted = this.tickQueue.shift();
     if (scripted instanceof Error) throw scripted;
     if (scripted !== undefined) return await scripted;
 
     const id = `tick-${this.nextDefaultId++}`;
-    const text = window.map((u) => `${u.speaker}: ${u.text}`).join("\n").trim() || "No new utterances";
+    const text = window
+      .filter((utterance) => (utterance as Utterance & { instruction?: true }).instruction !== true)
+      .map((u) => `${u.speaker}: ${u.text}`)
+      .join("\n")
+      .trim() || "No new utterances";
     return [{
       op: "upsert",
       id,

@@ -102,9 +102,28 @@ function renderCanvas(state: CanvasState): string {
     .join("\n");
 }
 
+type PromptUtterance = Utterance & { instruction?: true };
+
+const isInstruction = (utterance: Utterance): utterance is PromptUtterance =>
+  (utterance as PromptUtterance).instruction === true;
+
 function renderWindow(window: Utterance[]): string {
-  if (!window.length) return "(nothing new)";
-  return window.map((u) => `${u.speaker}: ${u.text}`).join("\n");
+  const conversation = window.filter((utterance) => !isInstruction(utterance));
+  if (!conversation.length) return "(nothing new)";
+  return conversation.map((u) => `${u.speaker}: ${u.text}`).join("\n");
+}
+
+function renderInstructionSection(window: Utterance[]): string {
+  const instructions = window
+    .filter(isInstruction)
+    .map((utterance) => utterance.text.trim())
+    .filter(Boolean);
+  if (!instructions.length) return "";
+  return `## Participant instruction
+${instructions.map((instruction) => `A participant asked: ${instruction}`).join("\n")}
+
+Follow each request where it is compatible with the operations contract. Resolve references
+to blocks against the stable canvas above; do not invent a command grammar.`;
 }
 
 /** Fast incremental pass. Runs on every committed segment. */
@@ -138,6 +157,8 @@ ${renderCanvas(state)}
 
 ## What was just said
 ${renderWindow(window)}
+
+${renderInstructionSection(window)}
 
 Emit the operations.`,
   };
