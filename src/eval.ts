@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import type { CanvasState } from "./canvas.ts";
 import { realLlm, type Llm, type TokenUsage } from "./llm.ts";
 import { Room, type ServerMsg } from "./room.ts";
 import type { Fixture } from "./transcript.ts";
@@ -28,6 +29,46 @@ const formatCounts = (counts: Record<string, number>) => {
 };
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+const renderBlocks = (state: CanvasState) => state.blocks.length
+  ? state.blocks.map((block) => [
+      `#### ${block.id} - ${block.title}`,
+      "",
+      `\`\`\`${block.kind}`,
+      block.source,
+      "```",
+      "",
+    ].join("\n"))
+  : ["(empty canvas)", ""];
+
+/**
+ * The restructure pass is the one thing a reader has to judge by diffing, so the report
+ * carries the canvas on both sides of it plus which ids survived.
+ */
+function restructureSections(room: Room): string[] {
+  const passes = room.entries.filter((entry) => entry.restructure);
+  if (!passes.length) return [];
+  return passes.flatMap((entry, index) => {
+    const beforeIds = entry.before.blocks.map((block) => block.id);
+    const afterIds = entry.snapshot.blocks.map((block) => block.id);
+    return [
+      `## Restructure pass ${index + 1} (after segment ${entry.segment.id})`,
+      "",
+      `- before: ${beforeIds.join(", ") || "(none)"}`,
+      `- after: ${afterIds.join(", ") || "(none)"}`,
+      `- preserved ids: ${beforeIds.filter((id) => afterIds.includes(id)).join(", ") || "(none)"}`,
+      `- deleted ids: ${beforeIds.filter((id) => !afterIds.includes(id)).join(", ") || "(none)"}`,
+      `- new ids: ${afterIds.filter((id) => !beforeIds.includes(id)).join(", ") || "(none)"}`,
+      "",
+      "### Before",
+      "",
+      ...renderBlocks(entry.before),
+      "### After",
+      "",
+      ...renderBlocks(entry.snapshot),
+    ];
+  });
+}
 
 export async function runEval(fixtureName: string, options: EvalOptions = {}): Promise<EvalResult> {
   const llm = options.llm ?? realLlm;
@@ -81,6 +122,8 @@ export async function runEval(fixtureName: string, options: EvalOptions = {}): P
     `speculative calls made=${room.metrics.speculativeCallsMade}`,
     `speculative results discarded as stale=${room.metrics.speculativeResultsDiscarded}`,
     `amend would have mattered=${room.metrics.amendWouldHaveMattered}`,
+    `restructure passes=${room.metrics.restructurePasses}`,
+    `commits without growth=${room.metrics.commitsWithoutGrowth}`,
     `wall time=${wallTime}ms`,
     `tokens input=${usage.input - before.input}, output=${usage.output - before.output}, cacheRead=${usage.cacheRead - before.cacheRead}`,
   ].join("; ");
@@ -97,6 +140,7 @@ export async function runEval(fixtureName: string, options: EvalOptions = {}): P
     `# Eval: ${fixture.name}`,
     "",
     ...sections,
+    ...restructureSections(room),
     "## Summary",
     "",
     summaryLine,

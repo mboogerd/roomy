@@ -6,7 +6,13 @@ export const SEGMENT_PAUSE_MS = 1500;
 export const SEGMENT_MIN_CHARS = 40;
 export const SEGMENT_MAX_CHARS = 400;
 export const SUMMARY_EVERY = 4;      // commits between rolling-summary refreshes
-export const RESTRUCTURE_EVERY = 15; // commits between full-canvas rethinks
+// Commits that actually *changed the canvas* between full-canvas rethinks. Counting only
+// changing commits is the growth check: a stretch of "nothing new to draw" commits must
+// not buy a restructure pass. 16 fires about once per fixture-length conversation, late
+// enough that the canvas has something to consolidate (at 12 it fired on a two-block
+// canvas and had nothing to merge) and early enough that commits still follow it, so a
+// churning restructure would be visible in the report.
+export const RESTRUCTURE_EVERY = 16;
 
 type Listener = (msg: ServerMsg) => void;
 
@@ -24,6 +30,29 @@ export interface Entry {
   segment: Segment;
   ops: unknown[];
   snapshot: CanvasState;
+  /** The canvas as it was before this entry's ops. Lets a reader diff a restructure. */
+  before: CanvasState;
+  /** True when this entry's ops came from the restructure pass rather than a tick. */
+  restructure?: boolean;
+}
+
+/**
+ * Did these ops change what a reader sees? An upsert that rewrites a block to the same
+ * source, or a reorder on its own, is movement without growth and must not count toward
+ * the next restructure pass.
+ *
+ * ponytail: "changed" is byte equality on title/kind/source. A block reworded without
+ * saying anything new still counts as growth. Measuring meaning needs the model, which is
+ * the cost this check exists to avoid; the upgrade is to weight by blocks added rather
+ * than blocks touched, if churny ticks start buying restructures.
+ */
+export function canvasGrew(before: CanvasState, after: CanvasState): boolean {
+  if (before.blocks.length !== after.blocks.length) return true;
+  const previous = new Map(before.blocks.map((block) => [block.id, block]));
+  return after.blocks.some((block) => {
+    const was = previous.get(block.id);
+    return !was || was.source !== block.source || was.title !== block.title || was.kind !== block.kind;
+  });
 }
 
 // What eval.ts reports on; the server ignores it.
@@ -37,6 +66,10 @@ export interface RoomMetrics {
   speculativeCallsMade: number;
   speculativeResultsDiscarded: number;
   amendWouldHaveMattered: number;
+  /** Full-canvas rethinks that actually ran. */
+  restructurePasses: number;
+  /** Commits that changed nothing, so they did not count toward the next rethink. */
+  commitsWithoutGrowth: number;
 }
 
 export type ServerMsg =
@@ -103,6 +136,8 @@ export class Room {
     speculativeCallsMade: 0,
     speculativeResultsDiscarded: 0,
     amendWouldHaveMattered: 0,
+    restructurePasses: 0,
+    commitsWithoutGrowth: 0,
   };
 
   /** The one live segment, if speech is currently being accumulated. */
@@ -112,7 +147,9 @@ export class Room {
   private readonly pendingSegments: Segment[] = [];
   private commitLoop?: Promise<void>;
   private speculation?: SpeculationRequest & { promise: Promise<SpeculationResult> };
-  private readonly commitMemo = new Map<number, unknown[]>();
+  private readonly commitMemo = new Map<number, { ops: unknown[]; restructure: boolean }>();
+  /** Commits that changed the canvas since the last restructure pass. The growth check. */
+  private growthSinceRestructure = 0;
   private summaryWindow: Utterance[] = [];
   private transcript: Utterance[] = [];
   private lastCommit?: LastCommit;
@@ -219,6 +256,9 @@ export class Room {
     this.metrics.speculativeCallsMade = 0;
     this.metrics.speculativeResultsDiscarded = 0;
     this.metrics.amendWouldHaveMattered = 0;
+    this.metrics.restructurePasses = 0;
+    this.metrics.commitsWithoutGrowth = 0;
+    this.growthSinceRestructure = 0;
     this.emit({ type: "state", state: this.state, changed: [] });
   }
 
@@ -323,26 +363,29 @@ export class Room {
 
   private async commitSegment(segment: Segment, epoch: number): Promise<boolean> {
     if (epoch !== this.roomEpoch) return true;
-    let ops = this.commitMemo.get(segment.id);
+    let memo = this.commitMemo.get(segment.id);
     try {
-      if (!ops) {
+      if (!memo) {
         const base = copyState(this.stable);
         const previous = this.entries.slice(-2).flatMap((entry) => entry.segment.utterances);
         const window = [...previous, ...segment.utterances].map(copyUtterance);
-        const commitNumber = this.metrics.segmentsCommitted + 1;
+        // The growth check: only commits that changed the canvas earn the next rethink.
+        const restructure = this.growthSinceRestructure >= RESTRUCTURE_EVERY;
         this.beginWork();
+        let ops: unknown[];
         try {
-          ops = commitNumber % RESTRUCTURE_EVERY === 0
+          ops = restructure
             ? await this.llm.restructure(base, this.summary)
             : await this.llm.tick(base, window, this.summary);
         } finally {
           this.endWork();
         }
-        this.commitMemo.set(segment.id, ops.slice());
+        memo = { ops, restructure };
+        this.commitMemo.set(segment.id, { ops: ops.slice(), restructure });
       }
 
       if (epoch !== this.roomEpoch) return true;
-      this.applyCommitted(segment, ops);
+      this.applyCommitted(segment, memo.ops, memo.restructure);
       this.metrics.segmentsCommitted++;
       this.summaryWindow.push(...segment.utterances.map(copyUtterance));
       this.recordLastCommit(segment);
@@ -357,7 +400,8 @@ export class Room {
     }
   }
 
-  private applyCommitted(segment: Segment, ops: unknown[]) {
+  private applyCommitted(segment: Segment, ops: unknown[], restructure = false) {
+    const before = copyState(this.stable);
     const result = applyOps(this.stable, ops);
     this.stable = result.state;
     this.stableEpoch++;
@@ -365,7 +409,19 @@ export class Room {
       segment: { ...segment, utterances: segment.utterances.map(copyUtterance) },
       ops: ops.slice(),
       snapshot: copyState(this.stable),
+      before,
+      ...(restructure ? { restructure: true } : {}),
     });
+
+    const grew = canvasGrew(before, this.stable);
+    if (restructure) {
+      this.metrics.restructurePasses++;
+      this.growthSinceRestructure = 0;
+    } else if (grew) {
+      this.growthSinceRestructure++;
+    }
+    if (!grew) this.metrics.commitsWithoutGrowth++;
+
     this.metrics.opsApplied += result.applied.length;
     this.metrics.rejectedReasons.push(...result.rejected);
     if (result.rejected.length) console.warn("rejected ops:", result.rejected);

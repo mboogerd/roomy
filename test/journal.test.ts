@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Room, RESTRUCTURE_EVERY, SEGMENT_MAX_CHARS, SEGMENT_PAUSE_MS, SUMMARY_EVERY, type ServerMsg } from "../src/room.ts";
+import { canvasGrew, Room, RESTRUCTURE_EVERY, SEGMENT_MAX_CHARS, SEGMENT_PAUSE_MS, SUMMARY_EVERY, type ServerMsg } from "../src/room.ts";
 import { StubLlm } from "./stub-llm.ts";
 
 const flow = (id: string, source = "flowchart TD\n  A --> B") => ({
@@ -270,19 +270,79 @@ describe("commit cadence", () => {
     const stub = new StubLlm();
     const room = new Room(stub);
     // Alternating speakers, so every utterance is its own segment and every segment commits.
-    for (let i = 0; i < RESTRUCTURE_EVERY; i++) {
+    // The stub's default tick writes a fresh block each time, so every commit grows the canvas.
+    for (let i = 0; i < RESTRUCTURE_EVERY + 1; i++) {
       room.say(utterance(i % 2 ? "Ada" : "Lin", `Thought number ${i}, long enough to commit on its own.`, i * 10));
     }
     await room.maybeTick();
 
-    expect(room.metrics.segmentsCommitted).toBe(RESTRUCTURE_EVERY);
+    expect(room.metrics.segmentsCommitted).toBe(RESTRUCTURE_EVERY + 1);
     const commitPath = stub.calls.filter((call) => call.method === "tick" || call.method === "restructure");
     expect(commitPath.filter((call) => call.method === "restructure")).toHaveLength(1);
-    // The rethink is the RESTRUCTURE_EVERY-th commit, not the Nth model call.
-    expect(commitPath.findIndex((call) => call.method === "restructure")).toBe(RESTRUCTURE_EVERY - 1);
-    expect(stub.calls.filter((call) => call.method === "tick")).toHaveLength(RESTRUCTURE_EVERY - 1);
-    expect(stub.calls.filter((call) => call.method === "summarize")).toHaveLength(Math.floor(RESTRUCTURE_EVERY / SUMMARY_EVERY));
+    // The rethink is the commit after RESTRUCTURE_EVERY canvas-changing commits.
+    expect(commitPath.findIndex((call) => call.method === "restructure")).toBe(RESTRUCTURE_EVERY);
+    expect(room.metrics.restructurePasses).toBe(1);
+    expect(stub.calls.filter((call) => call.method === "tick")).toHaveLength(RESTRUCTURE_EVERY);
+    expect(stub.calls.filter((call) => call.method === "summarize"))
+      .toHaveLength(Math.floor((RESTRUCTURE_EVERY + 1) / SUMMARY_EVERY));
     room.stop();
+  });
+
+  it("does not restructure when no commit changed the canvas", async () => {
+    const stub = new StubLlm();
+    // Twice as many commits as the cadence, none of which changes anything a reader sees.
+    for (let i = 0; i < RESTRUCTURE_EVERY * 2; i++) stub.queueTick([]);
+    const room = new Room(stub);
+    for (let i = 0; i < RESTRUCTURE_EVERY * 2; i++) {
+      room.say(utterance(i % 2 ? "Ada" : "Lin", `Thought number ${i}, long enough to commit on its own.`, i * 10));
+    }
+    await room.maybeTick();
+
+    expect(room.metrics.segmentsCommitted).toBe(RESTRUCTURE_EVERY * 2);
+    expect(room.metrics.commitsWithoutGrowth).toBe(RESTRUCTURE_EVERY * 2);
+    expect(stub.calls.filter((call) => call.method === "restructure")).toHaveLength(0);
+    expect(room.metrics.restructurePasses).toBe(0);
+    room.stop();
+  });
+
+  it("treats a rewrite to identical source, and a bare reorder, as no growth", async () => {
+    const same = (id: string) => ({ op: "upsert", id, kind: "markdown", title: id, source: "### same" });
+    const stub = new StubLlm();
+    // One real block, then nothing but no-op rewrites and reorders of it.
+    stub.queueTick([same("a"), same("b")]);
+    for (let i = 0; i < RESTRUCTURE_EVERY * 2; i++) {
+      stub.queueTick(i % 2 ? [same("a"), same("b")] : [{ op: "reorder", ids: ["b", "a"] }]);
+    }
+    const room = new Room(stub);
+    for (let i = 0; i < RESTRUCTURE_EVERY * 2 + 1; i++) {
+      room.say(utterance(i % 2 ? "Ada" : "Lin", `Thought number ${i}, long enough to commit on its own.`, i * 10));
+    }
+    await room.maybeTick();
+
+    // Only the first commit grew the canvas; the rest were movement without change.
+    expect(room.metrics.commitsWithoutGrowth).toBe(RESTRUCTURE_EVERY * 2);
+    expect(stub.calls.filter((call) => call.method === "restructure")).toHaveLength(0);
+    room.stop();
+  });
+});
+
+describe("canvasGrew", () => {
+  const block = (id: string, source: string) => ({ id, kind: "markdown" as const, title: id, source });
+  const canvas = (...blocks: ReturnType<typeof block>[]) => ({ rev: 1, blocks });
+
+  it("sees an added, removed or rewritten block", () => {
+    expect(canvasGrew(canvas(), canvas(block("a", "x")))).toBe(true);
+    expect(canvasGrew(canvas(block("a", "x")), canvas())).toBe(true);
+    expect(canvasGrew(canvas(block("a", "x")), canvas(block("a", "y")))).toBe(true);
+    // Same count, different ids: a swap is still a change.
+    expect(canvasGrew(canvas(block("a", "x")), canvas(block("b", "x")))).toBe(true);
+  });
+
+  it("does not see a reorder or an identical rewrite", () => {
+    const a = block("a", "x");
+    const b = block("b", "y");
+    expect(canvasGrew(canvas(a, b), canvas(b, a))).toBe(false);
+    expect(canvasGrew(canvas(a, b), canvas({ ...a }, { ...b }))).toBe(false);
   });
 });
 
