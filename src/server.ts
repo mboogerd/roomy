@@ -11,13 +11,19 @@ const SLUG = /^[a-z0-9-]{3,40}$/;
 const here = new URL(".", import.meta.url);
 
 export interface ServerOptions {
+  /** How long a room with no subscribers survives. Injectable so a test can use milliseconds. */
   reapMs?: number;
-  reapIntervalMs?: number;
-  roomFactory?: () => Room;
+}
+
+/** A room plus the bookkeeping the reaper needs. */
+export interface RoomEntry {
+  room: Room;
+  subscribers: number;
+  reapTimer?: NodeJS.Timeout;
 }
 
 export interface RunningServer extends Server {
-  rooms: Map<string, Room>;
+  rooms: Map<string, RoomEntry>;
   ready: Promise<RunningServer>;
 }
 
@@ -40,14 +46,6 @@ async function replay(room: Room, name: string, speed: number) {
   }
 }
 
-interface RoomEntry {
-  room: Room;
-  subscribers: number;
-  reapTimer?: NodeJS.Timeout;
-}
-
-type ServerOptionsInput = ServerOptions | number;
-
 function slugFromPath(pathname: string) {
   const match = /^\/r\/([^/]+)(?:\/(events|utterance|render-error|replay|reset))?$/.exec(pathname);
   if (!match) return;
@@ -66,12 +64,9 @@ function freshSlug() {
   return randomBytes(8).toString("hex");
 }
 
-export function startServer(port = PORT, input: ServerOptionsInput = {}): RunningServer {
-  const options = typeof input === "number" ? { reapMs: input } : input;
-  const reapMs = options.reapMs ?? options.reapIntervalMs ?? DEFAULT_REAP_MS;
+export function startServer(port = PORT, options: ServerOptions = {}): RunningServer {
+  const reapMs = options.reapMs ?? DEFAULT_REAP_MS;
   const rooms = new Map<string, RoomEntry>();
-  const publicRooms = new Map<string, Room>();
-  const roomFactory = options.roomFactory ?? (() => new Room());
 
   const clearReap = (entry: RoomEntry) => {
     clearTimeout(entry.reapTimer);
@@ -85,18 +80,16 @@ export function startServer(port = PORT, input: ServerOptionsInput = {}): Runnin
       if (rooms.get(slug) !== entry || entry.subscribers !== 0) return;
       entry.room.stop();
       rooms.delete(slug);
-      publicRooms.delete(slug);
     }, reapMs);
   };
 
   const getRoom = (slug: string) => {
     let entry = rooms.get(slug);
     if (!entry) {
-      const room = roomFactory();
+      const room = new Room();
       room.start();
       entry = { room, subscribers: 0 };
       rooms.set(slug, entry);
-      publicRooms.set(slug, room);
       scheduleReap(slug, entry);
     }
     return entry;
@@ -188,7 +181,7 @@ export function startServer(port = PORT, input: ServerOptionsInput = {}): Runnin
   });
 
   const server = http as RunningServer;
-  server.rooms = publicRooms;
+  server.rooms = rooms;
   server.ready = new Promise<RunningServer>((resolve, reject) => {
     const onError = (err: Error) => reject(err);
     server.once("error", onError);
@@ -206,7 +199,6 @@ export function startServer(port = PORT, input: ServerOptionsInput = {}): Runnin
       entry.room.stop();
     }
     rooms.clear();
-    publicRooms.clear();
   });
   return server;
 }

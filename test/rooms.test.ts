@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Room } from "../src/room.ts";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { createContext, runInContext } from "node:vm";
 import { startServer, type RunningServer } from "../src/server.ts";
 
 type Stream = {
@@ -15,6 +18,23 @@ let base = "";
 
 async function wait(ms: number) {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function address() {
+  const addr = await server?.ready.then((s) => s.address());
+  if (!addr || typeof addr === "string") throw new Error("server has no TCP address");
+  return `http://127.0.0.1:${addr.port}`;
+}
+
+/** Poll until `check` returns something truthy, or give up. */
+async function until<T>(check: () => T | undefined, timeoutMs = 4000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = check();
+    if (value) return value;
+    await wait(10);
+  }
+  throw new Error("timed out waiting for condition");
 }
 
 async function connect(slug: string, name: string) {
@@ -81,9 +101,7 @@ describe("rooms and participants", () => {
   it("redirects to a slug and isolates named SSE conversations", async () => {
     server = startServer(0, { reapMs: 1000 });
     await server.ready;
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("server has no TCP address");
-    base = `http://127.0.0.1:${address.port}`;
+    base = await address();
 
     const root = await fetch(base, { redirect: "manual" });
     expect(root.status).toBe(302);
@@ -118,34 +136,25 @@ describe("rooms and participants", () => {
   });
 
   it("reaps an idle room and stops it", async () => {
-    const made: Room[] = [];
-    server = startServer(0, {
-      reapMs: 20,
-      roomFactory: () => {
-        const room = new Room();
-        vi.spyOn(room, "stop");
-        made.push(room);
-        return room;
-      },
-    });
+    server = startServer(0, { reapMs: 20 });
     await server.ready;
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("server has no TCP address");
-    base = `http://127.0.0.1:${address.port}`;
+    base = await address();
 
     expect((await fetch(`${base}/r/reap-me`)).ok).toBe(true);
-    expect(server.rooms.has("reap-me")).toBe(true);
+    const entry = server.rooms.get("reap-me");
+    if (!entry) throw new Error("room was not registered");
+    const stop = vi.spyOn(entry.room, "stop");
+
     await wait(60);
     expect(server.rooms.has("reap-me")).toBe(false);
-    expect(made[0].stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(entry.reapTimer).toBeUndefined();
   });
 
   it("replays into only the requested room", async () => {
     server = startServer(0, { reapMs: 1000 });
     await server.ready;
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("server has no TCP address");
-    base = `http://127.0.0.1:${address.port}`;
+    base = await address();
 
     const target = await connect("replay-room", "A");
     await nextMessage(target);
@@ -163,5 +172,75 @@ describe("rooms and participants", () => {
     expect((await nextMessage(target)).type).toBe("state");
     expect((await nextMessage(target)).type).toBe("utterance");
     await expect(nextMessage(other, 60)).rejects.toThrow(/timed out/);
+  });
+});
+
+describe("the replay script", () => {
+  it("still drives a room with `npm run replay -- incident-review 12`", async () => {
+    server = startServer(0, { reapMs: 5000 });
+    await server.ready;
+    base = await address();
+
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const child = spawn(
+      process.execPath,
+      ["--experimental-strip-types", "src/replay.ts", "incident-review", "12"],
+      { cwd: root, env: { ...process.env, ROOMY_URL: base }, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (out += chunk));
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+    expect(code).toBe(0);
+
+    // No slug given, so the script follows / to a fresh room and says which one.
+    expect(out).toMatch(/replaying incident-review at 12x — watch http:\/\/127\.0\.0\.1:\d+\/r\/[a-z0-9]{6,}/);
+    expect(server.rooms.size).toBe(1);
+
+    const entry = [...server.rooms.values()][0];
+    const heard: string[] = [];
+    entry.room.subscribe((msg) => {
+      if (msg.type === "utterance") heard.push(msg.utterance.text);
+    });
+    await until(() => heard.length > 0);
+  }, 15_000);
+});
+
+// ponytail: the client has no build step, so the name bootstrap is lifted out of the page
+// and run in a vm with stub globals. A jsdom harness is the upgrade if the client grows.
+describe("the client's identity", () => {
+  const html = readFileSync(fileURLToPath(new URL("../public/index.html", import.meta.url)), "utf8");
+
+  function bootstrap(stored: Map<string, string>, answer: string | null) {
+    const source = /const nameKey[\s\S]*?\n\}\n/.exec(html)?.[0];
+    if (!source) throw new Error("no name bootstrap found in public/index.html");
+    let asked = 0;
+    const context = createContext({
+      localStorage: {
+        getItem: (k: string) => stored.get(k) ?? null,
+        setItem: (k: string, v: string) => void stored.set(k, v),
+      },
+      window: { prompt: () => { asked++; return answer; } },
+    });
+    return { name: runInContext(`${source}\nname`, context) as string, asked };
+  }
+
+  it("asks once when no name is stored, then remembers it across reloads", () => {
+    const stored = new Map<string, string>();
+    const first = bootstrap(stored, "Ada");
+    expect(first).toEqual({ name: "Ada", asked: 1 });
+
+    const reload = bootstrap(stored, "Someone else");
+    expect(reload).toEqual({ name: "Ada", asked: 0 });
+  });
+
+  it("falls back to a name when the prompt is dismissed", () => {
+    expect(bootstrap(new Map(), null)).toEqual({ name: "Someone", asked: 1 });
+  });
+
+  it("sends that name on the SSE connection and on every utterance", () => {
+    expect(html).toContain('searchParams.set("name", name)');
+    expect(html).toContain('post("utterance", { speaker: name, text })');
+    expect(html).not.toContain('id="speaker"');
   });
 });
