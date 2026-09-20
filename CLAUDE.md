@@ -61,7 +61,8 @@ from the connection. That makes diarization free, and it is why contract 5 above
 Set `ROOMY_INGEST_SECRET` before starting the server to enable the authenticated
 `POST /r/<slug>/ingest` endpoint. Send `x-roomy-secret` and a JSON payload of
 `{ "speaker": string, "text": string, "t_ms"?: number }`; `t_ms` defaults to the
-server's current time and the request body may be at most 16 KB. For example:
+server's current time, `speaker` is at most 80 characters, and the request body may be at
+most 16 KB. A bad shape is 400, a bad or missing secret 401, an oversized body 413. For example:
 
 ```
 curl -X POST http://localhost:3000/r/demo-room/ingest \

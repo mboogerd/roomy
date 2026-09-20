@@ -8,6 +8,8 @@ import type { Fixture, Utterance } from "./transcript.ts";
 const PORT = Number(process.env.PORT ?? 3000);
 const DEFAULT_REAP_MS = 10 * 60 * 1000;
 const MAX_JSON_BYTES = 16 * 1024;
+// A posted speaker is a display name; the body limit alone would allow a 16 KB one.
+const MAX_SPEAKER_CHARS = 80;
 const SLUG = /^[a-z0-9-]{3,40}$/;
 const here = new URL(".", import.meta.url);
 const htmlEscapes: Record<string, string> = {
@@ -209,7 +211,7 @@ type IngestPayload = { speaker: string; text: string; t_ms?: number };
 function isIngestPayload(value: unknown): value is IngestPayload {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
-  return typeof body.speaker === "string" && body.speaker.trim().length > 0
+  return typeof body.speaker === "string" && body.speaker.trim().length > 0 && body.speaker.length <= MAX_SPEAKER_CHARS
     && typeof body.text === "string" && body.text.trim().length > 0
     && (body.t_ms === undefined || (typeof body.t_ms === "number" && Number.isFinite(body.t_ms)));
 }
@@ -292,9 +294,13 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
       if (!route) return send(404, { error: "not found" });
 
       if (route.action === "ingest") {
+        // ponytail: one shared secret covers every room and every poster, re-read from the
+        // environment per request. Per-source keys and rotation are the upgrade once more
+        // than one bot posts into the same deployment.
         const ingestSecret = process.env.ROOMY_INGEST_SECRET;
         if (!ingestSecret) return send(404, { error: "not found" });
-        if (req.method === "POST" && !matchesSecret(req.headers["x-roomy-secret"], ingestSecret)) {
+        // Checked before getRoom() so an unauthenticated caller cannot even create a room.
+        if (!matchesSecret(req.headers["x-roomy-secret"], ingestSecret)) {
           return send(401, { error: "invalid ingest secret" });
         }
       }
@@ -366,7 +372,9 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
           if (error instanceof SyntaxError) return send(400, { error: "invalid JSON" });
           throw error;
         }
-        if (!isIngestPayload(body)) return send(400, { error: "speaker, text, and optional numeric t_ms required" });
+        if (!isIngestPayload(body)) {
+          return send(400, { error: `speaker (1-${MAX_SPEAKER_CHARS} chars), text, and optional numeric t_ms required` });
+        }
         const u: Utterance = {
           t_ms: body.t_ms === undefined ? Date.now() : body.t_ms,
           speaker: body.speaker,
