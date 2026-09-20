@@ -267,6 +267,7 @@ const post = (path, body) => fetch(`${roomPath}/${path}`, {
 
 // Cache by id+source so an unchanged block is never re-rendered.
 const rendered = new Map();
+// Last source that failed to render, per block id: a repeat is not retried or re-reported.
 const failed = new Map();
 let drawVersion = 0;
 

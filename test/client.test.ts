@@ -118,15 +118,18 @@ describe("the client's canvas draw", () => {
     const context = createContext({
       document,
       $: (id: string) => (id === "canvas" ? canvas : stubElement()),
-      // Resolves a turn later, so a second draw can start while the first is awaiting.
+      // Settles a turn later, so a second draw can start while the first is awaiting. Like
+      // real mermaid, a failure rejects rather than throwing, and leaves its "d" + id node behind.
       mermaid: {
         render: (id: string, src: string) => {
           renderCalls.push({ id, source: src });
           const temporary = stubElement();
           temporary.id = "d" + id;
           document.body.append(temporary);
-          if (options.fail?.(src)) throw new Error("Syntax error in text");
-          return new Promise((resolve) => setTimeout(() => resolve({ svg: `<svg>${src}</svg>` }), 0));
+          return new Promise((resolve, reject) => setTimeout(() => {
+            if (options.fail?.(src)) reject(new Error("Syntax error in text"));
+            else resolve({ svg: `<svg>${src}</svg>` });
+          }, 0));
         },
       },
       post: (path: string, body: unknown) => { posts.push({ path, body }); },
@@ -171,6 +174,15 @@ describe("the client's canvas draw", () => {
     await scope.draw(changed);
     expect(scope.renderCalls).toHaveLength(2);
     expect(scope.posts).toHaveLength(2);
+  });
+
+  it("cleans up the temporary node of a failed render a newer draw superseded", async () => {
+    const scope = drawScope({ fail: () => true });
+    const stale = scope.draw({ blocks: [diagram("a", "bad source")] });
+    await scope.draw({ blocks: [diagram("a", "bad source")] });
+    await stale;
+    expect(scope.renderCalls).toHaveLength(2);
+    expect(scope.document.body.children).toHaveLength(0);
   });
 
   it("cleans up the temporary node after a successful render", async () => {
