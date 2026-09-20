@@ -56,6 +56,24 @@ Roomy does not integrate with a meeting tool's audio. Each participant opens Roo
 whatever call they are on, so one browser transcribes one person and speaker identity comes
 from the connection. That makes diarization free, and it is why contract 5 above matters.
 
+## Posting transcript from outside
+
+Set `ROOMY_INGEST_SECRET` before starting the server to enable the authenticated
+`POST /r/<slug>/ingest` endpoint. Send `x-roomy-secret` and a JSON payload of
+`{ "speaker": string, "text": string, "t_ms"?: number }`; `t_ms` defaults to the
+server's current time, `speaker` is at most 80 characters, and the request body may be at
+most 16 KB. A bad shape is 400, a bad or missing secret 401, an oversized body 413. For example:
+
+```
+curl -X POST http://localhost:3000/r/demo-room/ingest \
+  -H 'content-type: application/json' \
+  -H "x-roomy-secret: $ROOMY_INGEST_SECRET" \
+  -d '{"speaker":"Recall","text":"The decision is to ship Friday."}'
+```
+
+The fixture client uses the same endpoint: `ROOMY_INGEST_SECRET=... npm run ingest --
+<slug> <fixture> <speed>` (optionally set `ROOMY_URL` for another server).
+
 ## Not in scope for the PoC
 
 Auth, persistence, PlantUML, freestyle HTML blocks, and any vendor-specific meeting

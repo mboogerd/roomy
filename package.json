@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "node --experimental-strip-types --watch src/server.ts",
     "replay": "node --experimental-strip-types src/replay.ts",
+    "ingest": "node --experimental-strip-types src/ingest-demo.ts",
     "eval": "node --experimental-strip-types src/eval.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
