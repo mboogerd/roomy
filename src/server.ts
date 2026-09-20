@@ -64,9 +64,11 @@ const exportStyle = `
   .participants li { padding: .25rem .7rem; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
 `;
 
-function elapsedTime(tMs: number) {
-  if (!Number.isFinite(tMs)) return "";
-  const seconds = Math.max(0, Math.round(tMs / 1000));
+// Live utterances carry a wall-clock `t_ms` and fixture utterances carry an offset from
+// zero, so the transcript is anchored on its first turn exactly as the live page is.
+function elapsedTime(tMs: number, startMs: number) {
+  if (!Number.isFinite(tMs) || !Number.isFinite(startMs)) return "";
+  const seconds = Math.max(0, Math.round((tMs - startMs) / 1000));
   return `+${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
@@ -87,7 +89,8 @@ function exportPage(
 ) {
   const exportedAt = new Date().toISOString();
   const blocks = state.blocks.map(exportBlock).join("\n");
-  const transcript = utterances.map((utterance) => `<li class="turn"><div class="turn-head"><span class="speaker">${escapeHtml(utterance.speaker)}</span><time>${escapeHtml(elapsedTime(utterance.t_ms))}</time></div><p>${escapeHtml(utterance.text)}</p></li>`).join("\n");
+  const startMs = utterances[0]?.t_ms ?? 0;
+  const transcript = utterances.map((utterance) => `<li class="turn"><div class="turn-head"><span class="speaker">${escapeHtml(utterance.speaker)}</span><time>${escapeHtml(elapsedTime(utterance.t_ms, startMs))}</time></div><p>${escapeHtml(utterance.text)}</p></li>`).join("\n");
   const people = participants.map((participant) => `<li>${escapeHtml(participant)}</li>`).join("\n");
   const inlineMermaid = mermaidScript.replace(/<\/script/gi, "<\\/script");
 
@@ -120,8 +123,11 @@ function exportPage(
 </main>
 <script data-roomy-mermaid="inline">${inlineMermaid}</script>
 <script>
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
-  mermaid.run().catch(() => {});
+  // The page has a dark palette; the diagrams follow it, as the live canvas does.
+  // securityLevel stays "strict" — unlike the live page, this file is opened by third parties.
+  var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
+  mermaid.run().catch(function () {});
 </script>
 </body>
 </html>`;
@@ -231,6 +237,8 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
       if (req.method === "GET" && route.action === "export") {
         const entry = rooms.get(route.slug);
         if (!entry) return send(404, { error: "not found" });
+        // ponytail: the 3.5 MB runtime is re-read and re-inlined on every export; caching it
+        // in memory, or writing the export to disk, is the upgrade path if exports get frequent.
         const mermaidScript = await readFile(fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", here)), "utf8");
         const data = entry.room.exportData;
         const html = exportPage(route.slug, entry.room.state, data.utterances, data.participants, mermaidScript);
