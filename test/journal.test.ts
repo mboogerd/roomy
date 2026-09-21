@@ -413,4 +413,26 @@ describe("speculation concurrency and stale results", () => {
     expect(room.metrics.amendWouldHaveMattered).toBe(1);
     room.stop();
   });
+
+  it("replays the transcript to a late subscriber, steering marked as such", () => {
+    const room = new Room(new StubLlm());
+    room.say({ t_ms: 0, speaker: "Ada", text: "We should split billing out." });
+    room.say({ t_ms: 10, speaker: "Lin", text: "Roomy, draw that as a flowchart" });
+
+    const seen: ServerMsg[] = [];
+    room.subscribe((message) => seen.push(message));
+    room.stop();
+
+    const utterances = seen.filter((m) => m.type === "utterance").map((m) => m.utterance);
+    expect(utterances.map((u) => u.text)).toEqual(["We should split billing out.", "Roomy, draw that as a flowchart"]);
+    expect(utterances[1].instruction).toBe(true);
+  });
+
+  it("sanitises the glossary at the boundary and hands it to the model", async () => {
+    const stub = new StubLlm();
+    const room = new Room(stub);
+    room.setGlossary(["  Kwame ", 7, "", "x".repeat(99), "Pg\nBouncer"]);
+    expect(room.glossary).toEqual(["Kwame", "x".repeat(40), "Pg Bouncer"]);
+    room.stop();
+  });
 });

@@ -110,6 +110,23 @@ describe("HTML export", () => {
     expect(html).toContain("<time>+1:05</time>");
   });
 
+  it("exports a live session as a fixture that starts at zero", async () => {
+    server = startServer(0, { llm: new StubLlm() });
+    await server.ready;
+    const room = new Room(new StubLlm());
+    server.rooms.set("recorded", { room, subscribers: 0 });
+    room.say({ t_ms: 1_000_000, speaker: "Ada", text: "first" });
+    room.say({ t_ms: 1_004_000, speaker: "Lin", text: "second" });
+
+    const fixture = await (await fetch(`${await baseUrl()}/r/recorded/export?format=fixture`)).json();
+    expect(fixture.name).toBe("recorded");
+    expect(fixture.utterances).toEqual([
+      { t_ms: 0, speaker: "Ada", text: "first" },
+      { t_ms: 4000, speaker: "Lin", text: "second" },
+    ]);
+    room.stop();
+  });
+
   it("returns 404 for an unknown room and a meaningful page for an empty room", async () => {
     server = startServer(0);
     await server.ready;

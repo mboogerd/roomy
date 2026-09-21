@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import { startServer, type RunningServer } from "../src/server.ts";
+import { StubLlm } from "./stub-llm.ts";
 
 type Stream = {
   controller: AbortController;
@@ -99,7 +100,7 @@ afterEach(async () => {
 
 describe("rooms and participants", () => {
   it("redirects to a slug and isolates named SSE conversations", async () => {
-    server = startServer(0, { reapMs: 1000 });
+    server = startServer(0, { reapMs: 1000, llm: new StubLlm() });
     await server.ready;
     base = await address();
 
@@ -132,11 +133,14 @@ describe("rooms and participants", () => {
     await expect(nextMessage(other, 60)).rejects.toThrow(/timed out/);
 
     await closeStream(a);
-    expect((await nextMessage(b)).people).toEqual(["B"]);
+    // The stubbed model answers at once, so status messages from the commit can land first.
+    let left = await nextMessage(b);
+    while (left.type !== "presence") left = await nextMessage(b);
+    expect(left.people).toEqual(["B"]);
   });
 
   it("reaps an idle room and stops it", async () => {
-    server = startServer(0, { reapMs: 20 });
+    server = startServer(0, { reapMs: 20, llm: new StubLlm() });
     await server.ready;
     base = await address();
 
@@ -152,7 +156,7 @@ describe("rooms and participants", () => {
   });
 
   it("replays into only the requested room", async () => {
-    server = startServer(0, { reapMs: 1000 });
+    server = startServer(0, { reapMs: 1000, llm: new StubLlm() });
     await server.ready;
     base = await address();
 
@@ -177,7 +181,7 @@ describe("rooms and participants", () => {
 
 describe("the replay script", () => {
   it("still drives a room with `npm run replay -- incident-review 12`", async () => {
-    server = startServer(0, { reapMs: 5000 });
+    server = startServer(0, { reapMs: 5000, llm: new StubLlm() });
     await server.ready;
     base = await address();
 
@@ -211,7 +215,7 @@ describe("the replay script", () => {
 describe("the client's identity", () => {
   const html = readFileSync(fileURLToPath(new URL("../public/index.html", import.meta.url)), "utf8");
 
-  function bootstrap(stored: Map<string, string>, answer: string | null) {
+  function bootstrap(stored: Map<string, string>, answer: string | null | Error) {
     const source = /const nameKey[\s\S]*?\n\}\n/.exec(html)?.[0];
     if (!source) throw new Error("no name bootstrap found in public/index.html");
     let asked = 0;
@@ -220,7 +224,7 @@ describe("the client's identity", () => {
         getItem: (k: string) => stored.get(k) ?? null,
         setItem: (k: string, v: string) => void stored.set(k, v),
       },
-      window: { prompt: () => { asked++; return answer; } },
+      window: { prompt: () => { asked++; if (answer instanceof Error) throw answer; return answer; } },
     });
     return { name: runInContext(`${source}\nname`, context) as string, asked };
   }
@@ -235,7 +239,11 @@ describe("the client's identity", () => {
   });
 
   it("falls back to a name when the prompt is dismissed", () => {
-    expect(bootstrap(new Map(), null)).toEqual({ name: "Someone", asked: 1 });
+    // The fallback is unique per browser: the name is the speaker identity, so two
+    // anonymous participants must not merge into one.
+    expect(bootstrap(new Map(), null).name).toMatch(/^Guest \d{3}$/);
+    // Embedded browsers throw instead of returning null; the page must still come up.
+    expect(bootstrap(new Map(), new Error("prompt() is not supported.")).name).toMatch(/^Guest \d{3}$/);
   });
 
   it("sends that name on the SSE connection and on every utterance", () => {

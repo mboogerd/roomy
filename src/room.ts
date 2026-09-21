@@ -92,7 +92,7 @@ export type ServerMsg =
   // Full state on every change, plus which ids moved, so the client needs no op applier.
   | { type: "state"; state: CanvasState; changed: string[]; speculative?: string[] }
   | { type: "utterance"; utterance: Utterance & { instruction?: true } }
-  | { type: "status"; busy: boolean; note?: string }
+  | { type: "status"; busy: boolean; note?: string; behind?: number }
   | { type: "presence"; people: string[] };
 
 interface SpeculationResult {
@@ -156,6 +156,23 @@ export class Room {
     commitsWithoutGrowth: 0,
   };
 
+  /**
+   * Proper nouns the room wants spelled right. Survives reset(): it describes the people
+   * and the project, not one conversation.
+   * ponytail: last writer wins and other clients are not told. Broadcast it on the state
+   * message if two people ever fight over the list.
+   */
+  glossary: string[] = [];
+
+  setGlossary(names: unknown) {
+    const list = Array.isArray(names) ? names : [];
+    this.glossary = list
+      .filter((name): name is string => typeof name === "string")
+      .map((name) => name.replace(/\s+/g, " ").trim().slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 50);
+  }
+
   /** The one live segment, if speech is currently being accumulated. */
   live?: Segment;
 
@@ -200,6 +217,10 @@ export class Room {
     this.names.set(fn, name);
     const speculative = this.liveOps.length ? speculativeIds(this.validOverlayOps()) : undefined;
     fn({ type: "state", state: this.state, changed: [], ...(speculative?.length ? { speculative } : {}) });
+    // A late joiner or a reload gets the transcript so far, not just the canvas.
+    for (const u of this.transcript) {
+      fn({ type: "utterance", utterance: isSteeringUtterance(u.text) ? { ...u, instruction: true } : copyUtterance(u) });
+    }
     if (!samePeople(before, this.people())) this.emit({ type: "presence", people: this.people() });
     return () => {
       if (!this.listeners.has(fn)) return;
@@ -466,11 +487,13 @@ export class Room {
         // therefore cannot receive a participant instruction without changing src/llm.ts.
         const restructure = instructions.length === 0 && this.growthSinceRestructure >= RESTRUCTURE_EVERY;
         this.beginWork();
+        // How far the canvas trails the conversation, so "thinking..." is not the whole story.
+        if (this.pendingSegments.length) this.emit({ type: "status", busy: true, behind: this.pendingSegments.length });
         let ops: unknown[];
         try {
           ops = restructure
             ? await this.llm.restructure(base, this.summary)
-            : await this.llm.tick(base, window, this.summary);
+            : await this.llm.tick(base, window, this.summary, this.glossary);
         } finally {
           this.endWork();
         }
@@ -568,7 +591,7 @@ export class Room {
 
   private async runSpeculation(request: SpeculationRequest): Promise<SpeculationResult> {
     try {
-      const ops = await this.llm.speculate(copyState(this.stable), request.text);
+      const ops = await this.llm.speculate(copyState(this.stable), request.text, this.glossary);
       const current = this.isCurrent(request);
       if (!current) {
         this.metrics.speculativeResultsDiscarded++;

@@ -31,13 +31,16 @@ transcript --> Room (journal: segment, speculate, commit) --> LLM --> Op[] --> v
   leading "roomy" routes a segment as steering instead of conversation.
 - `src/llm.ts` — two-tier models: Haiku 4.5 on every commit, Sonnet 5 on the periodic rethink.
 - `src/transport.ts` — how a prompt reaches the model: `api`, `bedrock`, or the `claude` CLI.
-  `cli` bills a Claude subscription and adds 2–5 s per call; `api`/`bedrock` are the fast paths.
+  `cli` bills a Claude subscription but measured 15–40 s per call (2026-09-21), so commits
+  trail a live conversation by minutes; `api` measured ~2.5 s per call and is the only
+  transport that feels live. `ROOMY_CLI_TIMEOUT_MS` (default 180000) bounds a CLI call.
   If `claude auth status` says `authMethod: api_key`, `cli` is billing an API key, not a
   subscription — `/login` with the subscription account first.
 - `src/prompt.ts` — all prompt text. Nothing else in the repo contains prompt strings.
 - `src/server.ts` — node:http + SSE. No framework, no websockets, no database. One room per
-  `/r/<slug>`, with `events`, `utterance`, `ingest`, `render-error`, `replay`, `reset` and
-  `export` under it.
+  `/r/<slug>`, with `events`, `utterance`, `ingest`, `render-error`, `replay`, `reset`,
+  `glossary` and `export` under it. `export?format=fixture` returns the session as a fixture:
+  save it into `src/fixtures/` and a real conversation becomes replayable and evaluable.
 - `public/index.html` — the whole client. One file, no build step, mermaid from CDN.
 - `src/eval.ts` — `npm run eval -- <fixture>` drives a fixture through `Room` with no server
   and no browser, writes a report to `evals/` and prints a one-line summary. Reading the

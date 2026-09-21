@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyCanvas, validateOp } from "../src/canvas.ts";
-import { buildRestructurePrompt, buildSpeculatePrompt, buildTickPrompt } from "../src/prompt.ts";
+import { readFileSync } from "node:fs";
+import { buildRepairPrompt, buildRestructurePrompt, buildSpeculatePrompt, buildTickPrompt } from "../src/prompt.ts";
 
 /**
  * The prompt is judged by reading its output, not by a test. These two checks cover the
@@ -44,5 +45,24 @@ describe("prompt", () => {
       expect(prompt.system, `${pass} does not forbid colons`).toMatch(/NEVER write a colon/);
       expect(prompt.system, `${pass} does not show the colon-free clock form`).toMatch(/14h02/);
     }
+  });
+});
+
+describe("prompt contracts added after the first live look", () => {
+  it("forbids trading a block down on both passes that may rewrite one", () => {
+    expect(drawingPrompts.commit.system).toContain("Never trade a block down");
+    expect(drawingPrompts.restructure.system).toContain("Never trade a block down");
+  });
+
+  it("puts a room glossary in front of the passes that read raw speech, and nothing when empty", () => {
+    const names = ["Kwame", "PgBouncer"];
+    expect(buildTickPrompt(emptyCanvas(), [], "", names).user).toContain("Kwame, PgBouncer");
+    expect(buildSpeculatePrompt(emptyCanvas(), "live", names).user).toContain("Kwame, PgBouncer");
+    expect(drawingPrompts.commit.user).not.toContain("Names to spell exactly");
+  });
+
+  it("keeps the repair prompt in prompt.ts, and no prompt text in llm.ts", () => {
+    expect(buildRepairPrompt("a", "flowchart TD", "boom").user).toContain("boom");
+    expect(readFileSync(new URL("../src/llm.ts", import.meta.url), "utf8")).not.toContain("You fix");
   });
 });

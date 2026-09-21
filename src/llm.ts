@@ -1,6 +1,6 @@
 import type { CanvasState } from "./canvas.ts";
 import type { Utterance } from "./transcript.ts";
-import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt, buildSpeculatePrompt } from "./prompt.ts";
+import { buildTickPrompt, buildRestructurePrompt, buildSummaryPrompt, buildSpeculatePrompt, buildRepairPrompt } from "./prompt.ts";
 import { pickTransport } from "./transport.ts";
 
 // Two-tier: cheap model on every tick, capable model on the periodic rethink.
@@ -20,11 +20,11 @@ export interface LlmStats {
 
 /** The model seam used by Room. Test implementations cover the fast and committed paths. */
 export interface Llm {
-  tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]>;
+  tick(state: CanvasState, window: Utterance[], summary: string, glossary?: string[]): Promise<unknown[]>;
   restructure(state: CanvasState, summary: string): Promise<unknown[]>;
   summarize(previous: string, window: Utterance[]): Promise<string>;
   repair(id: string, source: string, error: string): Promise<unknown[]>;
-  speculate(state: CanvasState, text: string): Promise<unknown[]>;
+  speculate(state: CanvasState, text: string, glossary?: string[]): Promise<unknown[]>;
   readonly stats?: LlmStats;
 }
 
@@ -62,8 +62,8 @@ async function complete(model: string, system: string, user: string, maxTokens =
   return response.text;
 }
 
-async function tick(state: CanvasState, window: Utterance[], summary: string): Promise<unknown[]> {
-  const p = buildTickPrompt(state, window, summary);
+async function tick(state: CanvasState, window: Utterance[], summary: string, glossary?: string[]): Promise<unknown[]> {
+  const p = buildTickPrompt(state, window, summary, glossary);
   return parseOps(await complete(TICK_MODEL, p.system, p.user));
 }
 
@@ -72,8 +72,8 @@ async function restructure(state: CanvasState, summary: string): Promise<unknown
   return parseOps(await complete(RESTRUCTURE_MODEL, p.system, p.user, 8000));
 }
 
-async function speculate(state: CanvasState, text: string): Promise<unknown[]> {
-  const p = buildSpeculatePrompt(state, text);
+async function speculate(state: CanvasState, text: string, glossary?: string[]): Promise<unknown[]> {
+  const p = buildSpeculatePrompt(state, text, glossary);
   return parseOps(await complete(TICK_MODEL, p.system, p.user, 1200));
 }
 
@@ -84,15 +84,8 @@ async function summarize(previous: string, window: Utterance[]): Promise<string>
 
 /** Second chance for a block the browser could not render. */
 async function repair(id: string, source: string, error: string): Promise<unknown[]> {
-  const text = await complete(
-    TICK_MODEL,
-    `You fix broken mermaid diagrams. Output ONLY a JSON array with a single upsert operation:
-[{"op":"upsert","id":"...","kind":"mermaid","title":"...","source":"..."}]
-Keep the same id and the same meaning. Fix only what makes it fail to parse.
-Common causes: unquoted labels containing punctuation, stray characters in node ids,
-a diagram keyword that does not exist, indentation that is wrong for mindmap.`,
-    `id: ${id}\n\nrenderer error:\n${error}\n\nsource:\n${source}`,
-  );
+  const p = buildRepairPrompt(id, source, error);
+  const text = await complete(TICK_MODEL, p.system, p.user);
   return parseOps(text);
 }
 
