@@ -65,7 +65,8 @@ const cli: Transport = (model, system, user, maxTokens) =>
     let out = "", err = "";
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
-    const timer = setTimeout(() => child.kill(), 90_000);
+    // A killed call fails the commit; the room re-queues the segment and retries on the next drain.
+    const timer = setTimeout(() => child.kill(), Number(process.env.ROOMY_CLI_TIMEOUT_MS ?? 180_000));
     child.on("close", (code) => {
       clearTimeout(timer);
       try {

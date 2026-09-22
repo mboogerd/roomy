@@ -60,6 +60,12 @@
     background: var(--panel);
   }
   .block.markdown { width: 100%; max-width: 28rem; }
+  /* A wide diagram shrunk into a card is unreadable; zoomed, it keeps its size and scrolls. */
+  .block.diagram h2 { cursor: zoom-in; }
+  .block.zoomed { grid-column: 1 / -1; width: 100%; }
+  .block.zoomed h2 { cursor: zoom-out; }
+  .block.zoomed .body { overflow: auto; }
+  .block.zoomed .body svg { max-width: none; min-width: 1200px; }
   .block.changed { animation: block-change 1.25s ease-out; }
   .block.provisional {
     opacity: .72;
@@ -256,22 +262,39 @@
     <button id="reset" type="button">Reset</button>
     <button id="export" type="button">Export</button>
   </div>
+  <div class="bar">
+    <input id="glossary" aria-label="Names to spell exactly" placeholder="Names to spell right: Kwame, Postgres, ...">
+  </div>
   <div id="status" role="status" aria-live="polite">idle</div>
 </aside>
 
 <script type="module">
 import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
 const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "loose" });
+mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
 const $ = (id) => document.getElementById(id);
 const roomPath = location.pathname.replace(/\/$/, "");
 const nameKey = "roomy-name";
 let name = localStorage.getItem(nameKey);
 if (!name) {
-  name = (window.prompt("What is your name?", "") ?? "").trim() || "Someone";
+  // Embedded browsers throw on prompt(); that must not take the whole page down. The
+  // fallback is unique because the name is the speaker identity - two "Someone"s would merge.
+  try { name = (window.prompt("What is your name?", "") ?? "").trim(); } catch { name = ""; }
+  name ||= "Guest " + Math.floor(100 + Math.random() * 900);
   localStorage.setItem(nameKey, name);
 }
 $("identity").textContent = "you: " + name;
+$("identity").title = "Click to change your name";
+$("identity").style.cursor = "pointer";
+$("identity").onclick = () => {
+  const input = document.createElement("input");
+  input.value = name;
+  input.setAttribute("aria-label", "Your name");
+  // The name rides on the SSE connection, so a rename is a reconnect.
+  input.onchange = () => { localStorage.setItem(nameKey, input.value.trim() || name); location.reload(); };
+  $("identity").replaceWith(input);
+  input.focus();
+};
 
 const post = (path, body) => fetch(`${roomPath}/${path}`, {
   method: "POST", headers: { "content-type": "application/json" },
@@ -279,6 +302,7 @@ const post = (path, body) => fetch(`${roomPath}/${path}`, {
 });
 
 // Cache by id+source so an unchanged block is never re-rendered.
+const zoomed = new Set();
 const rendered = new Map();
 // Last source that failed to render, per block id: a repeat is not retried or re-reported.
 const failed = new Map();
@@ -317,6 +341,16 @@ async function draw(state, changed = [], speculative = []) {
     el.querySelector(".block-title").textContent = b.title;
     el.querySelector(".block-kind").textContent = isSpeculative ? "live" : b.kind === "mermaid" ? "diagram" : "note";
     const body = el.querySelector(".body");
+    if (b.kind === "mermaid") {
+      // Blocks are rebuilt on every draw, so which ones are zoomed lives outside the DOM.
+      const head = el.querySelector("h2");
+      head.tabIndex = 0;
+      head.setAttribute("role", "button");
+      head.title = "Enlarge or shrink this diagram";
+      el.classList.toggle("zoomed", zoomed.has(b.id));
+      head.onclick = () => el.classList.toggle("zoomed", zoomed.has(b.id) ? !zoomed.delete(b.id) : !!zoomed.add(b.id));
+      head.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); head.onclick(); } };
+    }
     canvas.append(el);
     if (changed.includes(b.id)) replayChange(el);
     const key = b.id + "::" + b.source;
@@ -435,7 +469,10 @@ function clearLog() {
 
 const events = new URL(`${roomPath}/events`, location.href);
 events.searchParams.set("name", name);
-new EventSource(events).onmessage = (e) => {
+const source = new EventSource(events);
+// The server replays the transcript on every (re)connect; start from empty so it never doubles.
+source.onopen = clearLog;
+source.onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === "state") {
     // T3 adds this optional field to the state message; old servers simply send none.
@@ -448,7 +485,7 @@ new EventSource(events).onmessage = (e) => {
   } else if (msg.type === "presence") {
     renderPresence(msg.people);
   } else if (msg.type === "status") {
-    $("status").textContent = msg.note ? "error: " + msg.note : msg.busy ? "thinking..." : "idle";
+    $("status").textContent = msg.note ? "error: " + msg.note : msg.busy ? (msg.behind ? `thinking... (${msg.behind} behind)` : "thinking...") : "idle";
   }
 };
 
@@ -460,6 +497,16 @@ $("play").onclick = () => {
   clearLog();
   post("replay", { fixture: $("fixture").value, speed: +$("speed").value });
 };
+// Proper nouns for the prompt. Kept per room in this browser and re-sent on load, since the server forgets.
+const glossaryKey = `roomy:glossary:${roomPath}`;
+const sendGlossary = () => {
+  localStorage.setItem(glossaryKey, $("glossary").value);
+  post("glossary", { names: $("glossary").value.split(",").map((n) => n.trim()).filter(Boolean) });
+};
+$("glossary").value = localStorage.getItem(glossaryKey) ?? "";
+if ($("glossary").value) sendGlossary();
+$("glossary").onchange = sendGlossary;
+
 $("reset").onclick = () => { clearLog(); rendered.clear(); failed.clear(); post("reset"); };
 $("export").onclick = () => window.open(`${roomPath}/export`, "_blank", "noopener");
 
@@ -500,16 +547,26 @@ mic.onclick = () => {
   recognition = rec;
   rec.continuous = true;
   rec.interimResults = false;
-  rec.lang = "en-US";
+  rec.lang = window.navigator?.language || "en-US";
   rec.onstart = () => { setRecording(true); showMicMessage("Listening…"); };
   rec.onresult = (e) => {
     for (let i = e.resultIndex; i < e.results.length; i++) say(e.results[i][0].transcript);
   };
   rec.onerror = (e) => {
     if (recognition !== rec) return;
+    // Silence is not a failure: Chrome ends the session and onend restarts it.
+    if (e.error === "no-speech" || e.error === "aborted") return;
     recognition = undefined;
     setRecording(false);
-    showMicMessage(e.error === "not-allowed" ? "Microphone permission was denied. Type instead." : "Microphone stopped. Type instead.");
+    const why = {
+      "not-allowed": "Microphone permission was denied.",
+      "service-not-allowed": "This browser blocks its speech service.",
+      // Web Speech is a Google cloud service; Chromium builds without Google keys (Brave, Arc, Electron) fail here.
+      "network": "This browser cannot reach a speech service - use Google Chrome.",
+      "audio-capture": "No microphone was found.",
+      "language-not-supported": `Speech recognition does not support ${rec.lang}.`,
+    }[e.error] ?? `Microphone stopped (${e.error}).`;
+    showMicMessage(why + " Type instead.");
   };
   rec.onend = () => {
     if (recognition !== rec) return;

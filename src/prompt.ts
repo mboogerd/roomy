@@ -92,6 +92,12 @@ Draw the structure of the thinking, not a transcript. Capture disagreement as
 disagreement: if two people hold opposing positions, both belong on the canvas, and so
 does what each one is worried about.`;
 
+const NEVER_TRADE_DOWN = `Never trade a block down. A rewrite must hold strictly more of the thinking than what it
+replaces: if a block already carries positions, who holds them, objections or causes, do
+not overwrite it with something thinner - a timeline of how it turned out, a tidy list of
+what was agreed. The conclusion is not a replacement for the argument that produced it. If
+the outcome deserves its own summary, that is a SECOND block, and the argument keeps its id.`;
+
 const IDENTITY = `You are Roomy, a silent participant in a live conversation. You keep a shared visual canvas
 in sync with what the group is working out. You never speak; you only edit the canvas.`;
 
@@ -126,8 +132,18 @@ Follow each request where it is compatible with the operations contract. Resolve
 to blocks against the stable canvas above; do not invent a command grammar.`;
 }
 
+/** Speech recognition mangles proper nouns, and they end up as node labels. */
+function renderGlossary(glossary: string[] = []): string {
+  if (!glossary.length) return "";
+  return `## Names to spell exactly
+${glossary.join(", ")}
+The transcript is speech recognition. When a word sounds like one of these, it is one of these.
+
+`;
+}
+
 /** Fast incremental pass. Runs on every committed segment. */
-export function buildTickPrompt(state: CanvasState, window: Utterance[], summary: string) {
+export function buildTickPrompt(state: CanvasState, window: Utterance[], summary: string, glossary?: string[]) {
   return {
     system: `${IDENTITY}
 
@@ -144,12 +160,8 @@ under the same id. Otherwise prefer small, surgical edits - extend a diagram wit
 node and edge, revise one block, add a decision. Do not redraw a block that has not
 changed, and do not restructure the canvas wholesale. Fewer than three operations is normal.
 
-Never trade a block down. A rewrite must hold strictly more of the thinking than what it
-replaces: if a block already carries positions, who holds them, objections or causes, do
-not overwrite it with something thinner - a timeline of how it turned out, a tidy list of
-what was agreed. The conclusion is not a replacement for the argument that produced it. If
-the outcome deserves its own summary, that is a SECOND block, and the argument keeps its id.`,
-    user: `## Conversation so far (summary)
+${NEVER_TRADE_DOWN}`,
+    user: `${renderGlossary(glossary)}## Conversation so far (summary)
 ${summary || "(the conversation just started)"}
 
 ## Current canvas
@@ -165,7 +177,7 @@ Emit the operations.`,
 }
 
 /** Fast provisional pass over one live segment. The stable canvas is the only context. */
-export function buildSpeculatePrompt(state: CanvasState, text: string) {
+export function buildSpeculatePrompt(state: CanvasState, text: string, glossary?: string[]) {
   return {
     system: `${IDENTITY}
 
@@ -184,7 +196,7 @@ The next speculation replaces this overlay completely, so do not emit a delta an
 assume an earlier speculation is present: every upsert carries full source.
 
 Output only the operations.`,
-    user: `## Stable canvas
+    user: `${renderGlossary(glossary)}## Stable canvas
 ${renderCanvas(state)}
 
 ## Live segment
@@ -220,7 +232,10 @@ and you are the only pass allowed to change its shape. Step back:
 - Is the reading order the order a newcomer would want? Emit one reorder if not.
 Large rewrites are appropriate here, but keep an id whenever the block is the same idea in
 better form, so the canvas does not visibly flicker. Only delete ids that appear in the
-canvas above. Aim to leave two to four blocks that each earn their place.`,
+canvas above. Aim to leave two to four blocks that each earn their place.
+
+${NEVER_TRADE_DOWN} Merging is not an exception: every cause, position and
+objection in an absorbed block must still be readable in the survivor.`,
     user: `## Conversation so far (summary)
 ${summary || "(the conversation just started)"}
 
@@ -247,5 +262,17 @@ ${previous || "(none yet)"}
 ${renderWindow(window)}
 
 Emit the updated summary.`,
+  };
+}
+
+/** Second chance for a block the browser could not render. */
+export function buildRepairPrompt(id: string, source: string, error: string) {
+  return {
+    system: `You fix broken mermaid diagrams. Output ONLY a JSON array with a single upsert operation:
+[{"op":"upsert","id":"...","kind":"mermaid","title":"...","source":"..."}]
+Keep the same id and the same meaning. Fix only what makes it fail to parse.
+Common causes: unquoted labels containing punctuation, stray characters in node ids,
+a diagram keyword that does not exist, indentation that is wrong for mindmap.`,
+    user: `id: ${id}\n\nrenderer error:\n${error}\n\nsource:\n${source}`,
   };
 }

@@ -218,27 +218,24 @@ the canvas builds from it, and an unauthenticated post is refused.
 - **Amend** (`docs/pipeline.md`). Reopen the last committed segment when its speaker resumes
   within ~2 s. **Decided at C3b: not now.** T3 measured 0 occasions on all three fixtures (smallest
   same-speaker gap 7 s). Revisit only with live speech, where real pauses may differ.
-- **Restructure prompt can trade content down** (T5 evaluator, incident-review run1: four causes
-  became three). The commit prompt has a "never trade a block down" rule; the restructure prompt does not.
+- **Prompt caching never hits** (measured 2026-09-21: `cacheRead=0` over 29 API calls). Only the
+  system prompt carries `cache_control` and it is below Haiku's minimum cacheable size; the stable
+  canvas sits uncached in the user message. `docs/pipeline.md` invariant 3 assumes otherwise.
+- **A restructure commit does not draw its own segment** (`src/room.ts`, `restructure ? ... : tick`).
+  The segment only reaches the canvas as context for the next tick.
+- **Interim speech results.** The mic sends finals only, so speculation sees finished phrases.
+  Needs a provisional path through `say()`, which touches frozen contract 5.
 - **Ingest uses one shared secret** (T8). `ROOMY_INGEST_SECRET` covers every room and every
   poster, and is re-read from the environment per request. Per-source keys, scoping a key to a
   room, and rotation are the upgrade once more than one bot posts into a deployment.
-- **`test/rooms.test.ts` can call a real LLM** if `ANTHROPIC_API_KEY` is set (`src/server.ts` builds
-  rooms with `realLlm`). Needs an injectable factory in server.ts.
 - **Acoustic crosstalk in co-located rooms.** One browser per speaker works when everyone
   is remote with headsets. Laptops around a table each hear the whole room, so the same
   sentence arrives three times under three names. Likely fix is a "one mic in this room"
   mode. Not a blocker for the PoC; it is a blocker for a demo held in person.
 - **Web Speech sends audio to Google.** Chrome's implementation is a cloud service; recent
   Chrome has an on-device option worth checking. An argument for streaming ASR otherwise.
-- **Per-room glossary.** Proper nouns end up as node labels, and Web Speech mangles them.
-  A short list of project, service and people names fed into the prompt would fix the one
-  ASR failure that is visible on the canvas. Ten lines; slot next to T5 if wanted.
 - **Streaming ASR** (Deepgram / AssemblyAI). Better transcripts, and a vendor relationship.
   With T2 in place, diarization is no longer the reason to want it. Needs a key.
 - **Freestyle HTML blocks.** The `Block.kind` seam allows it. Deliberately not opened:
   HTML cannot fail a parser, so bad output renders as plausible garbage.
 - **Persistence.** Everything is in memory. Restart loses every room.
-- **CLI transport kills any call after 90 s** (`src/transport.ts:68`), which fails a whole eval or drops a
-  live tick with exit 143. architecture-debate failed 3 of 4 attempts at the C-final check. Make the timeout
-  configurable and raise the default, and let the room retry a killed call once.

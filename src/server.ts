@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Room } from "./room.ts";
+import type { Llm } from "./llm.ts";
 import type { Fixture, Utterance } from "./transcript.ts";
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -139,6 +140,8 @@ function exportPage(
 export interface ServerOptions {
   /** How long a room with no subscribers survives. Injectable so a test can use milliseconds. */
   reapMs?: number;
+  /** The model behind every room this server creates. Tests pass a stub so no test can bill a real one. */
+  llm?: Llm;
 }
 
 /** A room plus the bookkeeping the reaper needs. */
@@ -229,7 +232,7 @@ async function replay(room: Room, name: string, speed: number) {
 }
 
 function slugFromPath(pathname: string) {
-  const match = /^\/r\/([^/]+)(?:\/(events|utterance|ingest|render-error|replay|reset|export))?$/.exec(pathname);
+  const match = /^\/r\/([^/]+)(?:\/(events|utterance|ingest|render-error|replay|reset|export|glossary))?$/.exec(pathname);
   if (!match) return;
   let slug: string;
   try {
@@ -268,7 +271,7 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
   const getRoom = (slug: string) => {
     let entry = rooms.get(slug);
     if (!entry) {
-      const room = new Room();
+      const room = new Room(options.llm);
       room.start();
       entry = { room, subscribers: 0 };
       rooms.set(slug, entry);
@@ -310,8 +313,17 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
         if (!entry) return send(404, { error: "not found" });
         // ponytail: the 3.5 MB runtime is re-read and re-inlined on every export; caching it
         // in memory, or writing the export to disk, is the upgrade path if exports get frequent.
-        const mermaidScript = await readFile(fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", here)), "utf8");
         const data = entry.room.exportData;
+        // A live session as a replayable fixture: drop it in src/fixtures/ and `npm run eval` it.
+        if (url.searchParams.get("format") === "fixture") {
+          const t0 = data.utterances[0]?.t_ms ?? 0;
+          return send(200, {
+            name: route.slug,
+            description: `Recorded from room ${route.slug}`,
+            utterances: data.utterances.map((u) => ({ ...u, t_ms: u.t_ms - t0 })),
+          });
+        }
+        const mermaidScript = await readFile(fileURLToPath(new URL("../node_modules/mermaid/dist/mermaid.min.js", here)), "utf8");
         const html = exportPage(route.slug, entry.room.state, data.utterances, data.participants, mermaidScript);
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         return res.end(html);
@@ -394,6 +406,12 @@ export function startServer(port = PORT, options: ServerOptions = {}): RunningSe
         const body = await json(req);
         void replay(entry.room, String(body.fixture ?? "architecture-debate"), Number(body.speed ?? 10));
         return send(200, { ok: true });
+      }
+
+      if (req.method === "POST" && route.action === "glossary") {
+        const body = await json(req);
+        entry.room.setGlossary(body.names);
+        return send(200, { names: entry.room.glossary });
       }
 
       if (req.method === "POST" && route.action === "reset") {
